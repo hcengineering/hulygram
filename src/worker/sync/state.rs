@@ -1,0 +1,191 @@
+use std::collections::{HashMap, HashSet};
+
+use anyhow::Result;
+use chrono::{DateTime, Utc};
+use serde::{Deserialize, Serialize};
+use tracing::*;
+
+use crate::worker::services::GlobalServices;
+
+#[derive(Serialize, Deserialize, Clone)]
+pub struct Entry {
+    pub telegram_id: i32,
+    pub date: DateTime<Utc>,
+}
+
+#[derive(Serialize, Deserialize)]
+struct Segment {
+    channel: i64,
+    entries: Vec<Entry>,
+    deleted: HashSet<i32>,
+}
+
+impl Segment {
+    fn load(bytes: &[u8]) -> Result<Self> {
+        //ciborium::from_reader(bytes)
+        Ok(serde_json::from_slice(bytes)?)
+    }
+
+    fn store(&self) -> Result<Vec<u8>> {
+        //let mut bytes = Vec::new();
+        //ciborium::into_writer(self, &mut bytes)?;
+        //Ok(bytes)
+        Ok(serde_json::to_vec(self)?)
+    }
+}
+
+#[derive(Default)]
+struct Index {
+    by_telegram_id: HashMap<i32, Entry>,
+}
+
+impl Index {
+    fn values(&self) -> Vec<Entry> {
+        self.by_telegram_id.values().cloned().collect()
+    }
+}
+
+impl Index {
+    fn include(&mut self, entry: &Entry) {
+        self.by_telegram_id
+            .insert(entry.telegram_id, entry.to_owned());
+    }
+
+    #[allow(dead_code)]
+    fn clear(&mut self) {
+        self.by_telegram_id.clear();
+    }
+}
+
+pub struct SyncState {
+    channel: i64,
+    index: Index,
+    segment: Option<usize>,
+
+    path: String,
+    added: Index,
+    deleted: HashSet<i32>,
+
+    services: GlobalServices,
+
+    pub is_virgin: bool,
+    is_dirty: bool,
+}
+
+impl SyncState {
+    fn segment_path(path: &String, segment: usize) -> String {
+        format!("{}_{}", path, segment)
+    }
+
+    #[instrument(level = "trace", skip(services), fields(channel = %channel, path = %path))]
+    pub async fn load(channel: i64, path: String, services: GlobalServices) -> Result<Self> {
+        let kvs = services.kvs();
+        let mut segment = None;
+        let mut segments = Vec::new();
+
+        for n in 0.. {
+            if let Some(bytes) = kvs.get(&Self::segment_path(&path, n)).await? {
+                segments.push(Segment::load(bytes.as_slice())?);
+                segment = Some(n);
+            } else {
+                break;
+            }
+        }
+
+        let mut state = SyncState {
+            channel,
+            index: Index::default(),
+            segment,
+            path,
+            added: Index::default(),
+            deleted: HashSet::new(),
+            services,
+            is_dirty: false,
+            is_virgin: true,
+        };
+
+        if let Some((last, others)) = segments.split_last() {
+            let mut deleted = HashSet::<i32>::new();
+            for segment in others {
+                deleted.extend(segment.deleted.iter().cloned());
+            }
+
+            let mut index = Index::default();
+            for segment in &segments {
+                for entry in &segment.entries {
+                    index.include(entry);
+                }
+            }
+
+            state.added = Index::default();
+
+            for entry in &last.entries {
+                state.added.include(entry);
+            }
+
+            state.deleted = last.deleted.to_owned();
+
+            state.is_virgin = false;
+        }
+
+        Ok(state)
+    }
+
+    pub fn ids(&self) -> Vec<i32> {
+        self.index
+            .by_telegram_id
+            .keys()
+            .chain(self.added.by_telegram_id.keys())
+            .filter(|id| !self.deleted.contains(id))
+            .copied()
+            .collect()
+    }
+
+    pub fn lookup(&self, id: i32) -> Option<&Entry> {
+        self.added
+            .by_telegram_id
+            .get(&id)
+            .or_else(|| self.index.by_telegram_id.get(&id))
+            .filter(|entry| !self.deleted.contains(&entry.telegram_id))
+    }
+
+    pub fn delete(&mut self, id: i32) {
+        self.deleted.insert(id);
+        self.is_dirty = true;
+    }
+
+    pub fn upsert(&mut self, entry: &Entry) {
+        self.added.include(entry);
+        self.is_dirty = true;
+    }
+
+    #[instrument(level = "trace", skip(self), fields(dirty = %self.is_dirty))]
+    pub async fn persist(&mut self) -> Result<()> {
+        if self.is_dirty {
+            let segment = Segment {
+                channel: self.channel,
+                entries: self.added.values(),
+                deleted: self.deleted.clone(),
+            };
+
+            let bytes = segment.store()?;
+            let kvs = self.services.kvs();
+
+            let segment = self.segment.unwrap_or(0);
+            self.segment = Some(segment);
+
+            kvs.upsert(&Self::segment_path(&self.path, segment), &bytes)
+                .await?;
+
+            self.is_dirty = false;
+
+            // only if rotate
+            //self.deleted.clear();
+            //self.added.clear();
+
+            trace!("State persisted");
+        }
+
+        Ok(())
+    }
+}

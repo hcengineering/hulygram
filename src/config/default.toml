@@ -1,0 +1,10 @@
+bind_port = 8086
+bind_host = "127.0.0.1"
+
+service_id = "hulygram"
+kvs_namespace = "hulygram"
+event_topic = "hulygun"
+allowed_dialog_ids = "4982993114,4937631480,1044298783,1974697595"
+get_file_rate_limit = 5
+blob_service_path = "http://localhost:4030"
+base_url = "https://hulygram.aristov.cc"
