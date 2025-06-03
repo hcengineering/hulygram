@@ -60,48 +60,54 @@ enum ImporterEvent {
 }
 
 impl SyncProcess {
-    async fn spawn(
+    #[instrument(level = "trace", skip_all)]
+    async fn maybe_spawn(
         user: &User,
         chat: &Chat,
         ws: &WorkspaceIntegration,
         global_services: GlobalServices,
         telegram: TelegramClient,
-    ) -> Result<Self> {
-        let info_key = format!("dlg_{}_{}_{}", user.id(), chat.id(), ws.workspace);
+    ) -> Result<Option<Self>> {
+        let chat_key = format!("chat_{}_{}_{}", user.id(), chat.id(), ws.workspace);
         let state_key = format!("sta_{}_{}_{}", user.id(), chat.id(), ws.workspace);
 
         let workspace_services = WorkspaceServices::new(&ws.transactor_url, ws.workspace)?;
 
-        let exporter = Exporter::new(
-            info_key,
+        let exporter = Exporter::maybe_create(
+            chat_key,
             user,
             chat,
             ws,
             telegram.clone(),
             global_services.clone(),
-            workspace_services.clone(),
+            workspace_services,
         )
         .await?;
 
-        let (sender, receiver) = mpsc::channel(1);
+        if let Some(exporter) = exporter {
+            let (sender, receiver) = mpsc::channel(1);
 
-        let state = SyncState::load(chat.id(), state_key, global_services).await?;
-        let limit = exporter.limit();
+            let state = SyncState::load(chat.id(), state_key, global_services).await?;
+            let limit = exporter.limit();
 
-        let export = task::spawn(Self::export_task(state, exporter, chat.pack(), receiver));
-        let generate = task::spawn(Self::generate_task(
-            telegram,
-            limit,
-            chat.pack(),
-            sender.clone(),
-        ));
+            let export = task::spawn(Self::export_task(state, exporter, chat.pack(), receiver));
+            let generate = task::spawn(Self::generate_task(
+                telegram,
+                limit,
+                chat.pack(),
+                sender.clone(),
+            ));
 
-        Ok(SyncProcess {
-            chat: chat.pack(),
-            sender,
-            export,
-            generate,
-        })
+            Ok(Some(SyncProcess {
+                chat: chat.pack(),
+                sender,
+                export,
+                generate,
+            }))
+        } else {
+            trace!("No exporter exporter created");
+            Ok(None)
+        }
     }
 
     #[instrument(level = "trace", skip_all, fields(chat = %self.chat.id))]
@@ -131,7 +137,7 @@ impl SyncProcess {
         Ok(())
     }
 
-    #[instrument(level = "trace", name="export", skip(state, exporter, chat, receiver), fields(chat = %chat.id))]
+    #[instrument(level = "trace", name="export", skip(state, exporter, chat, receiver), fields(chat_id = %chat.id))]
     async fn export_task(
         mut state: SyncState,
         mut exporter: Exporter,
@@ -264,7 +270,7 @@ impl SyncProcess {
                 Ok(Ok(Some(message))) => {
                     let _ = sender.send(ImporterEvent::Message(message)).await;
                 }
-                Ok(Ok(None)) => {
+                Ok(Ok(_)) => {
                     trace!("No more messages");
                     let _ = sender.send(ImporterEvent::BatchEnd(false)).await;
                     break;
@@ -319,16 +325,24 @@ impl Sync {
                 || CONFIG.allowed_dialog_ids.contains(&chat_id.to_string())
             {
                 for ws in &integrations {
-                    let sync = SyncProcess::spawn(
+                    let sync = SyncProcess::maybe_spawn(
                         &me,
                         chat,
                         ws,
                         global_services.clone(),
                         self.telegram.clone(),
                     )
-                    .await?;
+                    .await;
 
-                    self.syncs.insert(chat_id, sync);
+                    match sync {
+                        Ok(Some(sync)) => {
+                            self.syncs.insert(chat_id, sync);
+                        }
+                        Ok(None) => {}
+                        Err(error) => {
+                            error!(%error, "Cannot spawn sync for chat {}", chat_id);
+                        }
+                    }
                 }
             }
         }

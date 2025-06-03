@@ -27,7 +27,7 @@ pub struct AccountIntegrationData {
 pub struct WorkspaceIntegration {
     pub account: AccountUuid,
     pub workspace: WorkspaceUuid,
-    pub person: PersonId,
+    pub social_id: SocialIdId,
     pub transactor_url: Url,
 }
 
@@ -192,7 +192,7 @@ impl TelegramIntegration for AccountClient {
                         account,
                         workspace,
                         transactor_url: transactor_url.to_owned(),
-                        person: social_id.clone(),
+                        social_id: social_id.clone(),
                     });
                 }
             }

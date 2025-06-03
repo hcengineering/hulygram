@@ -1,6 +1,6 @@
 use std::{collections::HashMap, hash::Hasher, time::Duration};
 
-use anyhow::Result;
+use anyhow::{Result, anyhow};
 use grammers_client::{
     Client as TelegramClient,
     client::files::DownloadIter,
@@ -8,22 +8,21 @@ use grammers_client::{
 };
 use hulyrs::services::{
     transactor::{
-        document::{CreateDocumentBuilder, DocumentClient},
         event::{
             CreateFileEventBuilder, CreateMessageEventBuilder, CreatePatchEventBuilder,
-            FileDataBuilder, MessageRequestType, RemoveMessagesEventBuilder,
+            FileDataBuilder, MessageRequestType, PatchData,
         },
         person::{EnsurePerson, EnsurePersonRequest},
     },
     types::PersonId,
 };
-use serde_json::{self as json};
 use tokio::time;
 use tracing::*;
 
 use super::{
     blob::{BlobClient, Sender as BlobSender},
     sync::SyncInfo,
+    tx::TransactorExt,
 };
 use crate::{
     integration::WorkspaceIntegration,
@@ -166,7 +165,8 @@ pub(super) struct Exporter {
 }
 
 impl Exporter {
-    pub(super) async fn new(
+    #[instrument(level = "trace", skip_all, fields(chat = %chat.id(), user = %user.id(), account = %ws.account, workspace = %ws.workspace))]
+    pub(super) async fn maybe_create(
         info_key: String,
         user: &User,
         chat: &Chat,
@@ -174,14 +174,14 @@ impl Exporter {
         telegram: TelegramClient,
         global_services: GlobalServices,
         workspace_services: WorkspaceServices,
-    ) -> Result<Self> {
+    ) -> Result<Option<Self>> {
         let info = global_services.kvs().get(&info_key).await?;
 
         let exporter = if let Some(info) = &info {
             let info = serde_json::from_slice::<SyncInfo>(info)?;
             let blobs = BlobClient::new(info.huly_workspace)?;
 
-            trace!(user = user.id(), chat = chat.id(), "Dialog info was found");
+            trace!("Chat info found");
 
             Self {
                 info_key,
@@ -194,32 +194,28 @@ impl Exporter {
                 social_ids: HashMap::new(),
             }
         } else {
-            trace!(
-                user = user.id(),
-                chat = chat.id(),
-                "Dialog info was not found, creating new huly channel"
-            );
+            trace!("Chat info not found");
 
-            let channel_id = ksuid::Ksuid::generate().to_base62();
-            let now = chrono::Utc::now();
-            let create_channel = CreateDocumentBuilder::default()
-                .object_id(&channel_id)
-                .object_class("chat:masterTag:Channel")
-                .created_by(&ws.person)
-                .created_on(now)
-                .modified_by(&ws.person)
-                .modified_on(now)
-                .object_space("card:space:Default")
-                .attributes(serde_json::json!({
-                    "title": format!("{}", chat.name().unwrap_or("no chat name")),
-                    "rank": "0|i0000f:",
-                    "content": "",
-                    "parentInfo": [],
-                    "blobs": {}
-                }))
-                .build()?;
+            let tx = workspace_services.transactor();
 
-            let _value: json::Value = workspace_services.transactor().tx(create_channel).await?;
+            let person_id = tx.find_person(ws.account).await?.ok_or_else(|| {
+                warn!("Person not found");
+                anyhow!("NoPerson")
+            })?;
+
+            let space_id = tx.find_personal_space(&person_id).await?.ok_or_else(|| {
+                warn!(%person_id, "Personal space not found");
+                anyhow!("NoPersonSpace")
+            })?;
+
+            let channel = tx
+                .create_channel(
+                    &ws.social_id,
+                    &person_id,
+                    &space_id,
+                    chat.name().unwrap_or("No chat name"),
+                )
+                .await?;
 
             let info = SyncInfo {
                 telegram_user: user.id(),
@@ -228,15 +224,15 @@ impl Exporter {
 
                 huly_workspace: ws.workspace,
                 huly_account: ws.account,
-                huly_channel: channel_id.clone(),
+                huly_channel: channel.clone(),
                 complete: false,
             };
 
-            trace!(user = info.telegram_user, chat = chat.id(), channel = %info.huly_channel, "Channel created");
+            trace!(channel = %info.huly_channel, "Channel created");
 
             global_services
                 .kvs()
-                .upsert(&info_key, &json::to_vec(&info)?)
+                .upsert(&info_key, &serde_json::to_vec(&info)?)
                 .await?;
 
             let blobs = BlobClient::new(info.huly_workspace)?;
@@ -253,7 +249,7 @@ impl Exporter {
             }
         };
 
-        Ok(exporter)
+        Ok(Some(exporter))
     }
 
     pub fn limit(&self) -> Option<u32> {
@@ -265,7 +261,7 @@ impl Exporter {
         self.info.complete = true;
         self.global_services
             .kvs()
-            .upsert(&self.info_key, &json::to_vec(&self.info)?)
+            .upsert(&self.info_key, &serde_json::to_vec(&self.info)?)
             .await?;
 
         Ok(())
@@ -331,12 +327,17 @@ impl Exporter {
             if let Some(huly_id) = self.message_groups.get(&group) {
                 // the message is not first in the group, do update
                 if !message.markdown_text().is_empty() {
+                    let patch_data = PatchData::Update {
+                        content: Some(message.markdown_text()),
+                        data: None,
+                    };
+
                     let patch = CreatePatchEventBuilder::default()
                         .message(huly_id)
                         .message_created(message.date())
-                        .card(card)
-                        .content(message.markdown_text())
                         .creator(&social_id)
+                        .card(card)
+                        .data(patch_data)
                         .build()
                         .unwrap();
 
@@ -484,12 +485,17 @@ impl Exporter {
 
         if let Some(message_id) = message_id {
             if !message.markdown_text().is_empty() {
+                let patch_data = PatchData::Update {
+                    content: Some(message.markdown_text()),
+                    data: None,
+                };
+
                 let patch = CreatePatchEventBuilder::default()
                     .message(&message_id)
                     .message_created(message.date())
-                    .card(card)
-                    .content(message.markdown_text())
                     .creator(&social_id)
+                    .card(card)
+                    .data(patch_data)
                     .build()
                     .unwrap();
 
@@ -508,10 +514,11 @@ impl Exporter {
     }
 
     pub(super) async fn delete(&mut self, message: i32) -> Result<()> {
-        let message_id = (self.info.telegram_chat, message).huly_message_id();
+        let _message_id = (self.info.telegram_chat, message).huly_message_id();
 
-        let workspace = &self.info.huly_workspace;
+        let _workspace = &self.info.huly_workspace;
 
+        /*
         let remove = RemoveMessagesEventBuilder::default()
             .card(&self.info.huly_channel)
             .messages(vec![message_id.clone()])
@@ -522,6 +529,7 @@ impl Exporter {
             .hulygun()
             .request(*workspace, MessageRequestType::RemoveMessages, remove)
             .await?;
+        */
 
         Ok(())
     }
