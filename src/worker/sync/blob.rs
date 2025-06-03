@@ -5,7 +5,7 @@ use reqwest::{
     multipart::{Form, Part},
 };
 use secrecy::{ExposeSecret, SecretString};
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, oneshot};
 use tokio_stream::wrappers::ReceiverStream;
 use tracing::*;
 use url::Url;
@@ -40,8 +40,14 @@ impl BlobClient {
         Ok(Self { token, base, http })
     }
 
-    pub fn upload(&self, id: Uuid, length: usize, mime_type: &str) -> Result<Sender> {
+    pub fn upload(
+        &self,
+        id: Uuid,
+        length: usize,
+        mime_type: &str,
+    ) -> Result<(Sender, oneshot::Receiver<Result<(), reqwest::Error>>)> {
         let (sender, receiver) = mpsc::channel::<std::io::Result<Vec<u8>>>(1);
+        let (ready_sender, ready_receiver) = oneshot::channel();
 
         let body = Body::wrap_stream(ReceiverStream::new(receiver));
 
@@ -72,14 +78,18 @@ impl BlobClient {
                             "Error status, while uploading file"
                         );
                     }
+
+                    let _ = ready_sender.send(Ok(()));
                 }
 
                 Err(error) => {
                     error!(%id, ?error, "Error while uploading file");
+
+                    let _ = ready_sender.send(Err(error));
                 }
             }
         });
 
-        Ok(sender)
+        Ok((sender, ready_receiver))
     }
 }

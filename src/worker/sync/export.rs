@@ -412,13 +412,22 @@ impl Exporter {
                     .download_all(&photo, self.global_services.limiter())
                     .await?;
 
-                let id = message.huly_blob_id();
-                let length = bytes.len();
+                let huly_blob_id = message.huly_blob_id();
+                let length = blob.len();
 
-                if let Ok(image_info) = imageinfo::ImageInfo::from_raw_data(&bytes) {
-                    let sender = self.blobs.upload(id, length, image_info.mimetype)?;
+                if let Ok(image_info) = imageinfo::ImageInfo::from_raw_data(&blob) {
+                    let ready = {
+                        let (sender, ready) =
+                            self.blobs
+                                .upload(huly_blob_id, length, image_info.mimetype)?;
 
-                    sender.send(Ok(bytes)).await?;
+                        sender.send(Ok(blob)).await?;
+
+                        ready
+                    };
+
+                    // wait for upload to complete
+                    let _ = ready.await?;
 
                     let file_data = FileDataBuilder::default()
                         .blob_id(huly_blob_id)
@@ -465,11 +474,15 @@ impl Exporter {
                 let mime_type = document.mime_type().unwrap_or("application/binary");
                 let length = document.size();
 
-                let sender = self.blobs.upload(id, length as usize, mime_type)?;
+                let (sender, ready) =
+                    self.blobs
+                        .upload(huly_blob_id, length as usize, mime_type)?;
                 let download_result = self
                     .telegram
                     .download_in_chunks(&document, sender, self.global_services.limiter())
                     .await;
+
+                let _ = ready.await?;
 
                 if download_result.is_ok() {
                     let file_data = FileDataBuilder::default()
