@@ -206,10 +206,10 @@ impl Exporter {
         } else {
             trace!("Chat info not found");
 
-            let card_name = chat.name().unwrap_or("No chat name");
+            let card_title = chat.name().unwrap_or("No chat name").to_owned();
 
             let is_private = !CONFIG.allowed_dialog_ids.contains(&chat.id().to_string());
-            let channel = if is_private {
+            let (space, channel) = if is_private {
                 let person_id = tx.find_person(ws.account).await?.ok_or_else(|| {
                     warn!("Person not found");
                     anyhow!("NoPerson")
@@ -220,22 +220,34 @@ impl Exporter {
                     anyhow!("NoPersonSpace")
                 })?;
 
-                tx.create_channel(&ws.social_id, &space_id, card_name)
-                    .await?
+                let channel = tx
+                    .create_channel(&ws.social_id, &space_id, &card_title)
+                    .await?;
+
+                (space_id, channel)
             } else {
-                tx.create_channel(&ws.social_id, "card:space:Default", card_name)
-                    .await?
+                let space = "card:space:Default".to_owned();
+
+                let channel = tx
+                    .create_channel(&ws.social_id, &space, &card_title)
+                    .await?;
+
+                (space, channel)
             };
 
             let info = DialogInfo {
                 telegram_user: user.id(),
                 telegram_type: chat.r#type(),
-                telegram_chat: chat.id(),
+                telegram_chat_id: chat.id(),
 
                 huly_workspace: ws.workspace,
                 huly_account: ws.account,
+                huly_social_id: ws.social_id.clone(),
                 huly_channel: channel.clone(),
-                complete: false,
+                huly_space: space,
+                huly_title: card_title,
+
+                is_complete: false,
             };
 
             trace!(channel = %info.huly_channel, "Channel created");
@@ -263,12 +275,16 @@ impl Exporter {
     }
 
     pub fn limit(&self) -> Option<u32> {
-        if self.info.complete { Some(1000) } else { None }
+        if self.info.is_complete {
+            Some(1000)
+        } else {
+            None
+        }
     }
 
     #[instrument(level = "trace", skip(self))]
     pub async fn set_complete(&mut self) -> Result<()> {
-        self.info.complete = true;
+        self.info.is_complete = true;
         self.global_services
             .kvs()
             .upsert(&self.info_key, &serde_json::to_vec(&self.info)?)
@@ -312,7 +328,7 @@ impl Exporter {
 
             let create = CreateMessageEventBuilder::default()
                 .id(&huly_id)
-                .external_id(format!("{}:{}", self.info.telegram_chat, message.id()))
+                .external_id(format!("{}:{}", self.info.telegram_chat_id, message.id()))
                 .card(&self.info.huly_channel)
                 .card_type("chat:masterTag:Channel")
                 .content(message.markdown_text())
@@ -524,7 +540,7 @@ impl Exporter {
     }
 
     pub(super) async fn delete(&mut self, message: i32) -> Result<()> {
-        let _message_id = (self.info.telegram_chat, message).huly_message_id();
+        let _message_id = (self.info.telegram_chat_id, message).huly_message_id();
 
         let _workspace = &self.info.huly_workspace;
 

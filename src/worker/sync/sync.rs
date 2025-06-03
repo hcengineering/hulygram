@@ -15,7 +15,7 @@ use grammers_client::{
     Client as TelegramClient,
     types::{Chat, Message, PackedChat, User},
 };
-use hulyrs::services::types::{AccountUuid, WorkspaceUuid};
+use hulyrs::services::types::{AccountUuid, SocialIdId, WorkspaceUuid};
 use multimap::MultiMap;
 use serde::{Deserialize, Serialize};
 use tokio::{
@@ -36,15 +36,18 @@ pub struct DialogInfo {
     // telegram user, chat type and chat id
     pub telegram_user: i64,
     pub telegram_type: DialogType,
-    pub telegram_chat: i64,
+    pub telegram_chat_id: i64,
 
     // huly workspace, account and chanel
     pub huly_workspace: WorkspaceUuid,
     pub huly_account: AccountUuid,
+    pub huly_social_id: SocialIdId,
     pub huly_channel: String,
+    pub huly_space: String,
+    pub huly_title: String,
 
     #[serde(default = "bool::default")]
-    pub complete: bool,
+    pub is_complete: bool,
 }
 
 struct SyncProcess {
