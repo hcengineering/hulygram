@@ -32,7 +32,7 @@ use super::{
 };
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct SyncInfo {
+pub struct DialogInfo {
     // telegram user, chat type and chat id
     pub telegram_user: i64,
     pub telegram_type: DialogType,

@@ -21,7 +21,7 @@ use tracing::*;
 
 use super::{
     blob::{BlobClient, Sender as BlobSender},
-    sync::SyncInfo,
+    sync::DialogInfo,
     tx::TransactorExt,
 };
 use crate::{
@@ -156,7 +156,7 @@ impl TelegramExt for TelegramClient {
 #[derive(Clone)]
 pub(super) struct Exporter {
     info_key: String,
-    pub info: SyncInfo,
+    pub info: DialogInfo,
     telegram: TelegramClient,
     global_services: GlobalServices,
     workspace_services: WorkspaceServices,
@@ -181,7 +181,7 @@ impl Exporter {
         let tx = workspace_services.transactor();
 
         let exporter = if let Some(info) = &info {
-            let info = serde_json::from_slice::<SyncInfo>(info)?;
+            let info = serde_json::from_slice::<DialogInfo>(info)?;
             let blobs = BlobClient::new(info.huly_workspace)?;
 
             trace!("Chat info found");
@@ -227,7 +227,7 @@ impl Exporter {
                     .await?
             };
 
-            let info = SyncInfo {
+            let info = DialogInfo {
                 telegram_user: user.id(),
                 telegram_type: chat.r#type(),
                 telegram_chat: chat.id(),
