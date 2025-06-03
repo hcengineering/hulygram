@@ -210,10 +210,17 @@ impl Worker {
                     other_uids: vec![],
                 };
 
-                if self.client.invoke(&register).await? {
-                    trace!(%phone, endpoint=%register.token, "Push endpoint registered");
-                } else {
-                    error!(%phone, endpoint=%register.token, "Push endpoint registration failed");
+                match self.client.invoke(&register).await {
+                    Ok(true) => {
+                        trace!(%phone, endpoint=%register.token, "Push endpoint registered");
+                    }
+                    Ok(false) => {
+                        warn!(%phone, endpoint=%register.token, "Push endpoint registration failed");
+                    }
+
+                    Err(error) => {
+                        warn!(%phone, endpoint=%register.token, %error, "Push endpoint registration failed");
+                    }
                 }
 
                 self.sync.spawn().await?;
