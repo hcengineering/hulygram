@@ -75,7 +75,7 @@ pub struct WorkerHints {
     #[builder(default)]
     pub support_auth: bool,
 
-    #[builder(default = "Duration::from_secs(120)")]
+    #[builder(default = "Duration::from_secs(600)")]
     pub ttl: Duration,
 }
 

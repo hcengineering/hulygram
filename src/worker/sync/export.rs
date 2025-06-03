@@ -1,4 +1,4 @@
-use std::{collections::HashMap, hash::Hasher, time::Duration};
+use std::{collections::HashMap, time::Duration};
 
 use anyhow::{Result, anyhow};
 use grammers_client::{
@@ -16,11 +16,14 @@ use hulyrs::services::{
     },
     types::PersonId,
 };
+use rand::Rng;
 use tokio::time;
 use tracing::*;
+use uuid::Uuid;
 
 use super::{
     blob::{BlobClient, Sender as BlobSender},
+    state::{Entry as StateEntry, EntryBuilder as StateEntryBuilder},
     sync::DialogInfo,
     tx::TransactorExt,
 };
@@ -30,41 +33,36 @@ use crate::{
     worker::{
         chat::ChatExt,
         services::{GlobalServices, Limiter, LimiterExt, WorkspaceServices},
+        sync::state::GroupRole,
     },
 };
 
+type MessageId = i64;
+
 trait HulyMessageId {
-    fn huly_message_id(&self) -> String;
-    fn huly_blob_id(&self) -> uuid::Uuid;
+    fn huly_message_id(&self) -> MessageId;
+    fn huly_blob_id(&self) -> Uuid;
 }
 
 impl HulyMessageId for Message {
-    fn huly_message_id(&self) -> String {
+    fn huly_message_id(&self) -> MessageId {
         (self.chat().id(), self.id()).huly_message_id()
     }
 
-    fn huly_blob_id(&self) -> uuid::Uuid {
+    fn huly_blob_id(&self) -> Uuid {
         (self.chat().id(), self.id()).huly_blob_id()
     }
 }
 
 impl HulyMessageId for (i64, i32) {
-    fn huly_message_id(&self) -> String {
-        let mut hasher = std::hash::DefaultHasher::new();
+    fn huly_message_id(&self) -> MessageId {
+        //Uuid::new_v4()
 
-        hasher.write_i64(self.0);
-        hasher.write_i32(self.1);
-
-        //??
-        (hasher.finish() as i64).to_string()
+        rand::rng().random()
     }
 
-    fn huly_blob_id(&self) -> uuid::Uuid {
-        let lower_u128 = (self.0 as u128) & 0xFFFF_FFFF_FFFF_FFFF;
-        let middle_u128 = ((self.1 as u128) & 0xFFFF_FFFF) << 64;
-        let upper_u128 = (0x2605_2025) << 96;
-
-        uuid::Builder::from_u128(lower_u128 | middle_u128 | upper_u128).into_uuid()
+    fn huly_blob_id(&self) -> Uuid {
+        Uuid::new_v4()
     }
 }
 
@@ -161,7 +159,7 @@ pub(super) struct Exporter {
     global_services: GlobalServices,
     workspace_services: WorkspaceServices,
     blobs: BlobClient,
-    message_groups: HashMap<i64, String>,
+    groups: HashMap<i64, MessageId>,
     social_ids: HashMap<String, PersonId>,
 }
 
@@ -196,7 +194,7 @@ impl Exporter {
                     global_services,
                     workspace_services,
                     blobs,
-                    message_groups: HashMap::new(),
+                    groups: HashMap::new(),
                     social_ids: HashMap::new(),
                 })
             } else {
@@ -266,7 +264,7 @@ impl Exporter {
                 global_services,
                 workspace_services,
                 blobs,
-                message_groups: HashMap::new(),
+                groups: HashMap::new(),
                 social_ids: HashMap::new(),
             })
         };
@@ -313,7 +311,7 @@ impl Exporter {
     }
 
     #[instrument(level = "trace", skip_all)]
-    pub async fn create(&mut self, message: &Message) -> Result<()> {
+    pub async fn create(&mut self, message: &Message) -> Result<StateEntry> {
         let person_request = message
             .sender()
             .unwrap_or(message.chat())
@@ -321,15 +319,20 @@ impl Exporter {
 
         let social_id = self.ensure_person(person_request).await?;
 
-        let card = &self.info.huly_channel;
+        let huly_channel_id = &self.info.huly_channel;
 
-        let create_message = async || -> Result<String> {
-            let huly_id = message.huly_message_id();
+        let mut entry_builder = StateEntryBuilder::default();
 
-            let create = CreateMessageEventBuilder::default()
-                .id(&huly_id)
+        entry_builder.telegram_message_id(message.id());
+        entry_builder.date(message.edit_date().unwrap_or(message.date()));
+
+        let create_message = async || -> Result<MessageId> {
+            let huly_message_id = message.huly_message_id();
+
+            let create_event = CreateMessageEventBuilder::default()
+                .id(&huly_message_id.to_string())
                 .external_id(format!("{}:{}", self.info.telegram_chat_id, message.id()))
-                .card(&self.info.huly_channel)
+                .card(huly_channel_id)
                 .card_type("chat:masterTag:Channel")
                 .content(message.markdown_text())
                 .creator(&social_id)
@@ -342,15 +345,15 @@ impl Exporter {
                 .request(
                     self.info.huly_workspace,
                     MessageRequestType::CreateMessage,
-                    create,
+                    create_event,
                 )
                 .await?;
 
-            Ok(huly_id)
+            Ok(huly_message_id)
         };
 
-        let attach_to = if let Some(group) = message.grouped_id() {
-            if let Some(huly_id) = self.message_groups.get(&group) {
+        let huly_message_id = if let Some(grouped_id) = message.grouped_id() {
+            if let Some(root_message_id) = self.groups.get(&grouped_id) {
                 // the message is not first in the group, do update
                 if !message.markdown_text().is_empty() {
                     let patch_data = PatchData::Update {
@@ -358,11 +361,11 @@ impl Exporter {
                         data: None,
                     };
 
-                    let patch = CreatePatchEventBuilder::default()
-                        .message(huly_id)
+                    let patch_event = CreatePatchEventBuilder::default()
+                        .message(root_message_id.to_string())
                         .message_created(message.date())
                         .creator(&social_id)
-                        .card(card)
+                        .card(huly_channel_id)
                         .data(patch_data)
                         .build()
                         .unwrap();
@@ -372,29 +375,39 @@ impl Exporter {
                         .request(
                             self.info.huly_workspace,
                             MessageRequestType::CreatePatch,
-                            patch.clone(),
+                            patch_event,
                         )
                         .await?;
                 }
 
-                huly_id.clone()
+                entry_builder.huly_message_id(*root_message_id);
+                entry_builder.group_role(Some(GroupRole::Member));
+
+                *root_message_id
             } else {
                 // the message is first in the group
-                let huly_id = create_message().await?;
-                self.message_groups.insert(group, huly_id.clone());
-                trace!(huly_id, "Group message created");
-                huly_id
+                let huly_message_id = create_message().await?;
+                self.groups.insert(grouped_id, huly_message_id);
+                trace!(%huly_message_id, "Group message created");
+
+                entry_builder.huly_message_id(huly_message_id);
+                entry_builder.group_role(Some(GroupRole::Root));
+
+                huly_message_id
             }
         } else {
             // the message is not grouped
-            let huly_id = create_message().await?;
-            trace!(huly_id, "Message created");
-            huly_id
+            let huly_message_id = create_message().await?;
+            trace!(%huly_message_id, "Message created");
+
+            entry_builder.huly_message_id(huly_message_id);
+
+            huly_message_id
         };
 
         match message.media() {
             Some(Media::Photo(photo)) => {
-                let bytes = self
+                let blob = self
                     .telegram
                     .download_all(&photo, self.global_services.limiter())
                     .await?;
@@ -408,7 +421,7 @@ impl Exporter {
                     sender.send(Ok(bytes)).await?;
 
                     let file_data = FileDataBuilder::default()
-                        .blob_id(id)
+                        .blob_id(huly_blob_id)
                         .size(length as u32)
                         .mime_type(image_info.mimetype)
                         .filename("photo.jpg")
@@ -424,9 +437,9 @@ impl Exporter {
                         ])
                         .build()?;
 
-                    let create_file = CreateFileEventBuilder::default()
-                        .card(card)
-                        .message(attach_to.clone())
+                    let create_file_event = CreateFileEventBuilder::default()
+                        .card(huly_channel_id)
+                        .message(huly_message_id.to_string())
                         .message_created(message.date())
                         .creator(&social_id)
                         .data(file_data)
@@ -437,17 +450,18 @@ impl Exporter {
                         .request(
                             self.info.huly_workspace,
                             MessageRequestType::CreateFile,
-                            create_file,
+                            create_file_event,
                         )
-                        .await
-                        .unwrap();
+                        .await?;
 
-                    trace!(blob=%id, "Blob attached");
+                    entry_builder.huly_image_id(Some(huly_blob_id));
+
+                    trace!(blob=%huly_blob_id, "Blob attached");
                 }
             }
 
             Some(Media::Document(document)) => {
-                let id = message.huly_blob_id();
+                let huly_blob_id = message.huly_blob_id();
                 let mime_type = document.mime_type().unwrap_or("application/binary");
                 let length = document.size();
 
@@ -459,15 +473,15 @@ impl Exporter {
 
                 if download_result.is_ok() {
                     let file_data = FileDataBuilder::default()
-                        .blob_id(id)
+                        .blob_id(huly_blob_id)
                         .size(length as u32)
                         .mime_type(mime_type)
                         .filename(document.name())
                         .build()?;
 
                     let create_file = CreateFileEventBuilder::default()
-                        .card(card)
-                        .message(attach_to.clone())
+                        .card(huly_channel_id)
+                        .message(huly_message_id.to_string())
                         .message_created(message.date())
                         .creator(&social_id)
                         .data(file_data)
@@ -480,8 +494,9 @@ impl Exporter {
                             MessageRequestType::CreateFile,
                             create_file,
                         )
-                        .await
-                        .unwrap();
+                        .await?;
+
+                    entry_builder.huly_image_id(Some(huly_blob_id));
                 }
             }
             _ => {
@@ -489,11 +504,15 @@ impl Exporter {
             }
         }
 
-        Ok(())
+        Ok(entry_builder.build().unwrap())
     }
 
     #[instrument(level = "trace", skip_all)]
-    pub async fn update(&mut self, message: &Message) -> Result<()> {
+    pub async fn update(
+        &mut self,
+        message: &Message,
+        mut state_entry: StateEntry,
+    ) -> Result<StateEntry> {
         let person_request = message
             .sender()
             .unwrap_or(message.chat())
@@ -504,7 +523,7 @@ impl Exporter {
         let card = &self.info.huly_channel;
 
         let message_id = if let Some(group) = message.grouped_id() {
-            self.message_groups.get(&group).map(ToOwned::to_owned)
+            self.groups.get(&group).map(ToOwned::to_owned)
         } else {
             Some(message.huly_message_id())
         };
@@ -517,7 +536,7 @@ impl Exporter {
                 };
 
                 let patch = CreatePatchEventBuilder::default()
-                    .message(&message_id)
+                    .message(&message_id.to_string())
                     .message_created(message.date())
                     .creator(&social_id)
                     .card(card)
@@ -536,7 +555,9 @@ impl Exporter {
             }
         }
 
-        Ok(())
+        state_entry.date = message.edit_date().unwrap_or(message.date());
+
+        Ok(state_entry)
     }
 
     pub(super) async fn delete(&mut self, message: i32) -> Result<()> {

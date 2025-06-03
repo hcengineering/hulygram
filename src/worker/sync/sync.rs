@@ -1,7 +1,6 @@
 use std::{collections::HashSet, sync::Arc, time::Duration};
 
 use crate::{
-    config::CONFIG,
     integration::{TelegramIntegration, WorkspaceIntegration},
     worker::{
         WorkerConfig,
@@ -26,10 +25,7 @@ use tokio::{
 };
 use tracing::*;
 
-use super::{
-    export::Exporter,
-    state::{Entry as StateEntry, SyncState},
-};
+use super::{export::Exporter, state::SyncState};
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct DialogInfo {
@@ -168,49 +164,47 @@ impl SyncProcess {
 
                             seen.insert(message.id());
 
-                            // (is known, is updated)
-                            let message_state = state.lookup(id).map(|e| (true, Some(e.date < date))).unwrap_or((false, None));
+                            let state_entry = state.lookup(id).map(ToOwned::to_owned);
 
-                            let result = match message_state {
-                                (false, None) => {
+                            let result = match state_entry {
+                                None => {
                                     // Unknown
                                     trace!("New");
-                                    (exporter.create(&message).await, true)
+                                    exporter.create(&message).await.map(Option::Some)
 
                                 }
                                 // known
-                                (true, Some(true)) => {
+                                Some(state_entry) if state_entry.date < date => {
                                     // Known and updated
                                     trace!("Updated");
-                                    (exporter.update(&message).await, true)
+                                    exporter.update(&message, state_entry).await.map(Option::Some)
                                 }
 
-                                (true, Some(false)) => {
-                                    // known and not updated, skip
-                                    (Ok(()), false)
+                                Some(_) => {
+                                    Ok(None)
                                 }
-
-                                _ => panic!(),
                             };
 
                             match result {
-                                (Ok(_), _should_log) => {
-                                    state.upsert(&StateEntry { telegram_id: id, date });
+                                Ok(Some(entry)) => {
+                                    state.upsert(&entry);
                                 }
-                                (Err(e), _) => {
+                                Ok(None) => {}
+
+                                Err(e) => {
                                     error!(error = %e, "Message");
                                 }
                             }
                         }
 
                         Some(ImporterEvent::Delete(message)) => {
-                            let span = span!(Level::TRACE, "message_delete", telegram_id = message);
+                            let span = span!(Level::TRACE, "Delete", telegram_id = message);
                             let _enter = span.enter();
 
 
                             if state.lookup(message).is_some() {
                                 if let Err(error) = exporter.delete(message).await {
-                                    error!(%error, "Delete");
+                                    error!(%error);
                                 }
 
                                 state.delete(message);

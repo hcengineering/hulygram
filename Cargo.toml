@@ -21,7 +21,7 @@ grammers-mtsender = { git = "https://github.com/aav/grammers" }
 serde_json = "1.0.140"
 strum = { version = "0.27.1", features = ["derive"] }
 hulyrs = { git = "https://github.com/hcengineering/hulyrs.git", branch = "master" }
-uuid = { version = "1.16.0", features = ["v7", "serde", "rng", "std"] }
+uuid = { version = "1.16.0", features = ["v4", "v7", "serde", "rng", "std"] }
 url = "2.5.4"
 ksuid = "0.2.0"
 chrono = { version = "0.4.40", features = ["serde"] }
@@ -43,3 +43,4 @@ tokio-stream = "0.1.17"
 bytes = "1.10.1"
 serde_with = "3.12.0"
 governor = "0.10.0"
+rand = "0.9.1"

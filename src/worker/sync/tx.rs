@@ -1,5 +1,4 @@
 use anyhow::{Ok, Result};
-use grammers_client::types::inline::query;
 use hulyrs::services::{
     transactor::{
         TransactorClient,

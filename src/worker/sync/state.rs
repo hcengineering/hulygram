@@ -2,14 +2,32 @@ use std::collections::{HashMap, HashSet};
 
 use anyhow::Result;
 use chrono::{DateTime, Utc};
+use derive_builder::Builder;
 use serde::{Deserialize, Serialize};
 use tracing::*;
+use uuid::Uuid;
 
 use crate::worker::services::GlobalServices;
 
 #[derive(Serialize, Deserialize, Clone)]
+pub enum GroupRole {
+    Root,
+    Member,
+}
+
+#[derive(Serialize, Deserialize, Clone, Builder)]
 pub struct Entry {
-    pub telegram_id: i32,
+    pub telegram_message_id: i32,
+    pub huly_message_id: i64,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[builder(default)]
+    pub huly_image_id: Option<Uuid>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[builder(default)]
+    pub group_role: Option<GroupRole>,
+
     pub date: DateTime<Utc>,
 }
 
@@ -48,7 +66,7 @@ impl Index {
 impl Index {
     fn include(&mut self, entry: &Entry) {
         self.by_telegram_id
-            .insert(entry.telegram_id, entry.to_owned());
+            .insert(entry.telegram_message_id, entry.to_owned());
     }
 
     #[allow(dead_code)]
@@ -146,7 +164,7 @@ impl SyncState {
             .by_telegram_id
             .get(&id)
             .or_else(|| self.index.by_telegram_id.get(&id))
-            .filter(|entry| !self.deleted.contains(&entry.telegram_id))
+            .filter(|entry| !self.deleted.contains(&entry.telegram_message_id))
     }
 
     pub fn delete(&mut self, id: i32) {
