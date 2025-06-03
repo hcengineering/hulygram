@@ -178,26 +178,33 @@ impl Exporter {
     ) -> Result<Option<Self>> {
         let info = global_services.kvs().get(&info_key).await?;
 
+        let tx = workspace_services.transactor();
+
         let exporter = if let Some(info) = &info {
             let info = serde_json::from_slice::<SyncInfo>(info)?;
             let blobs = BlobClient::new(info.huly_workspace)?;
 
             trace!("Chat info found");
 
-            Self {
-                info_key,
-                info,
-                telegram,
-                global_services,
-                workspace_services,
-                blobs,
-                message_groups: HashMap::new(),
-                social_ids: HashMap::new(),
+            let is_found = tx.find_channel(&info.huly_channel).await?;
+
+            if is_found {
+                Some(Self {
+                    info_key,
+                    info,
+                    telegram,
+                    global_services,
+                    workspace_services,
+                    blobs,
+                    message_groups: HashMap::new(),
+                    social_ids: HashMap::new(),
+                })
+            } else {
+                trace!("Channel not found");
+                None
             }
         } else {
             trace!("Chat info not found");
-
-            let tx = workspace_services.transactor();
 
             let card_name = chat.name().unwrap_or("No chat name");
 
@@ -240,7 +247,7 @@ impl Exporter {
 
             let blobs = BlobClient::new(info.huly_workspace)?;
 
-            Self {
+            Some(Self {
                 info_key,
                 info,
                 telegram,
@@ -249,10 +256,10 @@ impl Exporter {
                 blobs,
                 message_groups: HashMap::new(),
                 social_ids: HashMap::new(),
-            }
+            })
         };
 
-        Ok(Some(exporter))
+        Ok(exporter)
     }
 
     pub fn limit(&self) -> Option<u32> {

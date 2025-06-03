@@ -1,4 +1,5 @@
 use anyhow::{Ok, Result};
+use grammers_client::types::inline::query;
 use hulyrs::services::{
     transactor::{
         TransactorClient,
@@ -16,6 +17,8 @@ pub(super) trait TransactorExt {
         space_id: &str,
         title: &str,
     ) -> impl Future<Output = Result<String>>;
+
+    fn find_channel(&self, channel_id: &str) -> impl Future<Output = Result<bool>>;
 
     fn find_person(&self, person: PersonUuid) -> impl Future<Output = Result<Option<PersonId>>>;
 
@@ -58,6 +61,21 @@ impl TransactorExt for TransactorClient {
         trace!(channel_id);
 
         Ok(channel_id)
+    }
+
+    async fn find_channel(&self, channel_id: &str) -> Result<bool> {
+        let query = json!({
+            "_id": channel_id,
+        });
+
+        let options = FindOptionsBuilder::default().project("_id").build()?;
+
+        let is_found = self
+            .find_one::<_, serde_json::Value>("chat:masterTag:Channel", query, &options)
+            .await?
+            .is_some();
+
+        Ok(is_found)
     }
 
     #[instrument(level = "trace", skip(self))]

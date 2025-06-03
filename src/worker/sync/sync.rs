@@ -106,7 +106,6 @@ impl SyncProcess {
                 generate,
             }))
         } else {
-            trace!("No exporter exporter created");
             Ok(None)
         }
     }
