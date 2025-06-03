@@ -10,6 +10,7 @@ use crate::{
     },
 };
 use anyhow::Result;
+use chrono::TimeDelta;
 use grammers_client::{
     Client as TelegramClient,
     types::{Chat, Message, PackedChat, User},
@@ -321,9 +322,13 @@ impl Sync {
             let chat = dialog.chat();
             let chat_id = chat.id();
 
-            if CONFIG.allowed_dialog_ids.is_empty()
-                || CONFIG.allowed_dialog_ids.contains(&chat_id.to_string())
-            {
+            let not_too_old = dialog
+                .last_message
+                .as_ref()
+                .map(|m| chrono::Utc::now() - m.date() < TimeDelta::days(90))
+                .unwrap_or(false);
+
+            if not_too_old {
                 for ws in &integrations {
                     let sync = SyncProcess::maybe_spawn(
                         &me,

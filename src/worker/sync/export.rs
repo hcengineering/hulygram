@@ -25,6 +25,7 @@ use super::{
     tx::TransactorExt,
 };
 use crate::{
+    CONFIG,
     integration::WorkspaceIntegration,
     worker::{
         chat::ChatExt,
@@ -198,24 +199,26 @@ impl Exporter {
 
             let tx = workspace_services.transactor();
 
-            let person_id = tx.find_person(ws.account).await?.ok_or_else(|| {
-                warn!("Person not found");
-                anyhow!("NoPerson")
-            })?;
+            let card_name = chat.name().unwrap_or("No chat name");
 
-            let space_id = tx.find_personal_space(&person_id).await?.ok_or_else(|| {
-                warn!(%person_id, "Personal space not found");
-                anyhow!("NoPersonSpace")
-            })?;
+            let is_private = !CONFIG.allowed_dialog_ids.contains(&chat.id().to_string());
+            let channel = if is_private {
+                let person_id = tx.find_person(ws.account).await?.ok_or_else(|| {
+                    warn!("Person not found");
+                    anyhow!("NoPerson")
+                })?;
 
-            let channel = tx
-                .create_channel(
-                    &ws.social_id,
-                    &person_id,
-                    &space_id,
-                    chat.name().unwrap_or("No chat name"),
-                )
-                .await?;
+                let space_id = tx.find_personal_space(&person_id).await?.ok_or_else(|| {
+                    warn!(%person_id, "Personal space not found");
+                    anyhow!("NoPersonSpace")
+                })?;
+
+                tx.create_channel(&ws.social_id, &space_id, card_name)
+                    .await?
+            } else {
+                tx.create_channel(&ws.social_id, "card:space:Default", card_name)
+                    .await?
+            };
 
             let info = SyncInfo {
                 telegram_user: user.id(),

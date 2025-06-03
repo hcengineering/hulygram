@@ -13,7 +13,6 @@ pub(super) trait TransactorExt {
     fn create_channel(
         &self,
         social_id: &SocialIdId,
-        person_id: &PersonId,
         space_id: &str,
         title: &str,
     ) -> impl Future<Output = Result<String>>;
@@ -35,7 +34,6 @@ impl TransactorExt for TransactorClient {
     async fn create_channel(
         &self,
         social_id: &SocialIdId,
-        person_id: &PersonId,
         space_id: &str,
         title: &str,
     ) -> Result<String> {
