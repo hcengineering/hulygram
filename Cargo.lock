@@ -1483,7 +1483,6 @@ dependencies = [
 [[package]]
 name = "hulyrs"
 version = "0.1.0"
-source = "git+https://github.com/hcengineering/hulyrs.git?branch=master#b18d1b8535c7a930e308407f2b0f7ad911494dc1"
 dependencies = [
  "actix-web",
  "bytes",
