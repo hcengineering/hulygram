@@ -10,9 +10,10 @@ use crate::{
 };
 use anyhow::Result;
 use chrono::TimeDelta;
+use governor::Jitter;
 use grammers_client::{
     Client as TelegramClient,
-    types::{Chat, Message, PackedChat, User},
+    types::{Chat, Message, PackedChat, User, dialog},
 };
 use hulyrs::services::types::{AccountUuid, SocialIdId, WorkspaceUuid};
 use multimap::MultiMap;
@@ -62,20 +63,20 @@ enum ImporterEvent {
 impl SyncProcess {
     #[instrument(level = "trace", skip_all)]
     async fn maybe_spawn(
-        user: &User,
+        me: Arc<User>,
         chat: &Chat,
         ws: &WorkspaceIntegration,
         global_services: GlobalServices,
         telegram: TelegramClient,
     ) -> Result<Option<Self>> {
-        let chat_key = format!("chat_{}_{}_{}", user.id(), chat.id(), ws.workspace);
-        let state_key = format!("sta_{}_{}_{}", user.id(), chat.id(), ws.workspace);
+        let chat_key = format!("chat_{}_{}_{}", me.id(), chat.id(), ws.workspace);
+        let state_key = format!("sta_{}_{}_{}", me.id(), chat.id(), ws.workspace);
 
         let workspace_services = WorkspaceServices::new(&ws.transactor_url, ws.workspace)?;
 
         let exporter = Exporter::maybe_create(
             chat_key,
-            user,
+            &me,
             chat,
             ws,
             telegram.clone(),
@@ -87,12 +88,14 @@ impl SyncProcess {
         if let Some(exporter) = exporter {
             let (sender, receiver) = mpsc::channel(1);
 
-            let state = SyncState::load(chat.id(), state_key, global_services).await?;
+            let state = SyncState::load(chat.id(), state_key, global_services.clone()).await?;
             let limit = exporter.limit();
 
             let export = task::spawn(Self::export_task(state, exporter, chat.pack(), receiver));
             let generate = task::spawn(Self::generate_task(
                 telegram,
+                global_services,
+                me,
                 limit,
                 chat.pack(),
                 sender.clone(),
@@ -240,15 +243,23 @@ impl SyncProcess {
         }
     }
 
-    #[instrument(level = "trace", name="generate", skip(telegram, sender), fields(chat = %chat.id))]
+    #[instrument(level = "trace", name="generate", skip(telegram, sender, global_services, me), fields(chat = %chat.id))]
     async fn generate_task(
         telegram: TelegramClient,
+        global_services: GlobalServices,
+        me: Arc<User>,
         limit: Option<u32>,
         chat: PackedChat,
         sender: mpsc::Sender<ImporterEvent>,
     ) {
         let mut messages = telegram.iter_messages(chat);
         let mut count = 0;
+
+        global_services
+            .limiters()
+            .get_dialog
+            .until_key_ready(&me.id())
+            .await;
 
         loop {
             count += 1;
@@ -262,6 +273,12 @@ impl SyncProcess {
             }
 
             let next = time::timeout(Duration::from_secs(30), messages.next());
+
+            global_services
+                .limiters()
+                .get_history
+                .until_key_ready(&me.id())
+                .await;
 
             match next.await {
                 Ok(Ok(Some(message))) => {
@@ -306,15 +323,15 @@ impl Sync {
 
         let global_services = &self.config.global_services;
 
-        let me = self.telegram.get_me().await?;
+        let me = Arc::new(self.telegram.get_me().await?);
         let integrations = global_services
             .account()
             .find_workspace_integrations(me.id())
             .await?;
 
-        let mut dialogs = self.telegram.iter_dialogs();
+        let mut iter_dialogs = self.telegram.iter_dialogs();
 
-        while let Some(dialog) = dialogs.next().await? {
+        while let Some(dialog) = iter_dialogs.next().await? {
             let chat = dialog.chat();
             let chat_id = chat.id();
 
@@ -327,7 +344,7 @@ impl Sync {
             if not_too_old {
                 for ws in &integrations {
                     let sync = SyncProcess::maybe_spawn(
-                        &me,
+                        me.clone(),
                         chat,
                         ws,
                         global_services.clone(),

@@ -223,6 +223,8 @@ impl Worker {
                     }
                 }
 
+                self.persist_session().await?;
+
                 self.sync.spawn().await?;
 
                 startup_complete = true;

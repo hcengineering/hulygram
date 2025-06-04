@@ -35,7 +35,7 @@ impl Limiters {
         );
 
         let get_dialog = RateLimiter::dashmap_with_clock(
-            Quota::per_second(10.try_into().unwrap()).allow_burst(burst),
+            Quota::per_second(5.try_into().unwrap()).allow_burst(burst),
             MonotonicClock,
         );
 
