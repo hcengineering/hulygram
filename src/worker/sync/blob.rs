@@ -35,7 +35,7 @@ impl BlobClient {
             .workspace(workspace)
             .build()
             .unwrap()
-            .encode()?;
+            .encode(crate::config::hulyrs::CONFIG.token_secret.as_ref().unwrap())?;
 
         Ok(Self { token, base, http })
     }

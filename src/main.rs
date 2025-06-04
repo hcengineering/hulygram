@@ -21,7 +21,7 @@ pub fn initialize_tracing() {
         .with_target("grammers", tracing::Level::INFO)
         //.with_target("tokio", tracing::Level::TRACE)
         //.with_target("runtime", tracing::Level::TRACE)
-        .with_target("hulyrs::service", hulyrs::CONFIG.log)
+        .with_target("hulyrs::service", config::hulyrs::CONFIG.log)
         //.with_target("actix", tracing::Level::DEBUG)
         //.with_target("reqwest", tracing::Level::TRACE)
         

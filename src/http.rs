@@ -46,7 +46,9 @@ async fn interceptor(
     request: ServiceRequest,
     next: Next<impl MessageBody>,
 ) -> Result<ServiceResponse<impl MessageBody>, actix_web::Error> {
-    let claims = request.extract_claims()?.to_owned();
+    let claims = request
+        .extract_claims(crate::config::hulyrs::CONFIG.token_secret.as_ref().unwrap())?
+        .to_owned();
     request.extensions_mut().insert(claims.clone());
     next.call(request).await
 }

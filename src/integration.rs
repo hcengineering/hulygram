@@ -15,6 +15,8 @@ use hulyrs::services::{
     types::{AccountUuid, PersonId, SocialIdId, SocialIdType, WorkspaceUuid},
 };
 
+use crate::config::hulyrs::SERVICES;
+
 const INTEGRATION_KIND: &str = "hulygram";
 const SOCIAL_KIND: &str = "telegram";
 
@@ -94,7 +96,9 @@ impl TelegramIntegration for AccountClient {
 
     // all hulygram integrations for all account social ids's of type hulygram
     async fn find_account_integrations(&self, claims: &Claims) -> Result<Vec<AccountIntegration>> {
-        let caller_account = self.assume_claims(claims)?;
+        let caller_account = SERVICES.new_account_client(claims)?;
+
+        //let caller_account = self.assume_claims(claims)?;
 
         let account = &self.account;
 
@@ -156,19 +160,21 @@ impl TelegramIntegration for AccountClient {
         if let (Some(social_id), Some(account)) = (social_id, account_id) {
             let claims = ClaimsBuilder::default().account(account).build()?;
 
-            let accountc = self.assume_claims(&claims)?;
+            //let accountc = self.assume_claims(&claims)?;
+
+            let accountc = SERVICES.new_account_client(&claims)?;
 
             let mut ws_indexed = HashMap::new();
             for ws in accountc.get_user_workspaces().await?.into_iter() {
                 let ws_login_info = accountc
                     .select_workspace(&SelectWorkspaceParams {
-                        workspace_url: ws.url,
+                        workspace_url: ws.workspace.url,
                         kind: WorkspaceKind::Internal,
                         external_regions: Vec::default(),
                     })
                     .await?;
 
-                ws_indexed.insert(ws.uuid, ws_login_info.endpoint);
+                ws_indexed.insert(ws.workspace.uuid, ws_login_info.endpoint);
             }
 
             let integrations = self
@@ -207,8 +213,9 @@ impl TelegramIntegration for AccountClient {
     async fn ensure_social_id(&self, claims: &Claims, id: i64) -> Result<PersonId> {
         let id = id.to_string();
 
-        let social_id = self
-            .assume_claims(claims)?
+        let accountc = SERVICES.new_account_client(claims)?;
+
+        let social_id = accountc
             .get_social_ids(true)
             .await?
             .iter()

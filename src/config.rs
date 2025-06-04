@@ -6,6 +6,21 @@ use config::FileFormat;
 use serde::Deserialize;
 use url::Url;
 
+pub mod hulyrs {
+    use std::sync::LazyLock;
+
+    pub static CONFIG: LazyLock<hulyrs::Config> = LazyLock::new(|| match hulyrs::Config::auto() {
+        Ok(config) => config,
+        Err(error) => {
+            eprintln!("configuration error: {}", error);
+            std::process::exit(1);
+        }
+    });
+
+    pub static SERVICES: LazyLock<hulyrs::ServiceFactory> =
+        LazyLock::new(|| hulyrs::ServiceFactory::new(CONFIG.clone()));
+}
+
 #[serde_as]
 #[derive(Deserialize, Debug)]
 pub struct Config {

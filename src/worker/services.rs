@@ -5,7 +5,7 @@ use hulyrs::services::{
     account::AccountClient,
     jwt::{Claims, ClaimsBuilder},
     kvs::KvsClient,
-    transactor::{TransactorClient, event::KafkaEventPublisher},
+    transactor::{TransactorClient, event::kafka::KafkaEventPublisher},
     types::WorkspaceUuid,
 };
 use url::Url;
@@ -18,9 +18,11 @@ pub struct WorkspaceServices {
     transactor: Arc<TransactorClient>,
 }
 
+use crate::config::hulyrs::SERVICES;
+
 impl WorkspaceServices {
     pub fn new(url: &Url, workspace: WorkspaceUuid) -> anyhow::Result<Self> {
-        let transactor = TransactorClient::new(
+        let transactor = SERVICES.new_transactor_client(
             url.clone(),
             &ClaimsBuilder::default()
                 .system_account()
@@ -53,9 +55,9 @@ pub struct GlobalServices {
 impl GlobalServices {
     pub fn new(claims: Claims) -> Result<Self> {
         let inner = GlobalServicesInner {
-            kvs: KvsClient::new(CONFIG.kvs_namespace.to_owned(), claims.clone())?,
-            account: AccountClient::new(&claims)?,
-            hulygun: KafkaEventPublisher::new(&CONFIG.event_topic)?,
+            kvs: SERVICES.new_kvs_client(&CONFIG.kvs_namespace, &claims)?,
+            account: SERVICES.new_account_client(&claims)?,
+            hulygun: SERVICES.new_kafka_event_publisher(&CONFIG.event_topic)?,
             limiters: Limiters::new(),
         };
 
