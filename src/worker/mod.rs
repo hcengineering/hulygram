@@ -1,5 +1,6 @@
 mod auth;
 mod chat;
+mod limiters;
 mod services;
 mod supervisor;
 mod sync;

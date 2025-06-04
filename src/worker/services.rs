@@ -1,12 +1,6 @@
 use std::sync::Arc;
 
 use anyhow::Result;
-use governor::{
-    Quota, RateLimiter,
-    clock::{Clock, MonotonicClock},
-    middleware::NoOpMiddleware,
-    state::keyed::{DefaultHasher, DefaultKeyedStateStore},
-};
 use hulyrs::services::{
     account::AccountClient,
     jwt::{Claims, ClaimsBuilder},
@@ -16,6 +10,7 @@ use hulyrs::services::{
 };
 use url::Url;
 
+use super::limiters::Limiters;
 use crate::config::CONFIG;
 
 #[derive(Clone)]
@@ -44,10 +39,10 @@ impl WorkspaceServices {
 }
 
 struct GlobalServicesInner {
-    pub kvs: KvsClient,
-    pub account: AccountClient,
-    pub hulygun: KafkaEventPublisher,
-    pub limiter: Limiter,
+    kvs: KvsClient,
+    account: AccountClient,
+    hulygun: KafkaEventPublisher,
+    limiters: Limiters,
 }
 
 #[derive(Clone)]
@@ -55,33 +50,13 @@ pub struct GlobalServices {
     inner: Arc<GlobalServicesInner>,
 }
 
-pub type Limiter<MW = NoOpMiddleware<<MonotonicClock as Clock>::Instant>> =
-    RateLimiter<String, DefaultKeyedStateStore<String, DefaultHasher>, MonotonicClock, MW>;
-
-pub trait LimiterExt {
-    async fn wait(&self, key: &String);
-}
-
-impl LimiterExt for Limiter {
-    async fn wait(&self, key: &String) {
-        if let Err(delay) = self.check_key(key) {
-            tokio::time::sleep_until(delay.earliest_possible().into()).await;
-        }
-    }
-}
-
 impl GlobalServices {
     pub fn new(claims: Claims) -> Result<Self> {
-        let limiter = RateLimiter::dashmap_with_clock(
-            Quota::per_second(CONFIG.get_file_rate_limit).allow_burst(1.try_into().unwrap()),
-            MonotonicClock,
-        );
-
         let inner = GlobalServicesInner {
             kvs: KvsClient::new(CONFIG.kvs_namespace.to_owned(), claims.clone())?,
             account: AccountClient::new(&claims)?,
             hulygun: KafkaEventPublisher::new(&CONFIG.event_topic)?,
-            limiter,
+            limiters: Limiters::new(),
         };
 
         Ok(Self {
@@ -101,7 +76,7 @@ impl GlobalServices {
         &self.inner.hulygun
     }
 
-    pub fn limiter(&self) -> &Limiter {
-        &self.inner.limiter
+    pub fn limiters(&self) -> &Limiters {
+        &self.inner.limiters
     }
 }

@@ -1,4 +1,4 @@
-use std::{collections::HashMap, time::Duration};
+use std::{collections::HashMap, sync::Arc, time::Duration};
 
 use anyhow::{Result, anyhow};
 use grammers_client::{
@@ -32,7 +32,8 @@ use crate::{
     integration::WorkspaceIntegration,
     worker::{
         chat::ChatExt,
-        services::{GlobalServices, Limiter, LimiterExt, WorkspaceServices},
+        limiters::TelegramLimiter,
+        services::{GlobalServices, WorkspaceServices},
         sync::state::GroupRole,
     },
 };
@@ -82,25 +83,33 @@ impl DownloadIterExt for DownloadIter {
 }
 
 trait TelegramExt {
-    async fn download_all<D: Downloadable>(&mut self, d: &D, limiter: &Limiter) -> Result<Vec<u8>>;
+    async fn download_all<D: Downloadable>(
+        &mut self,
+        d: &D,
+        limiter: &TelegramLimiter,
+    ) -> Result<Vec<u8>>;
     async fn download_in_chunks<D: Downloadable>(
         &mut self,
         d: &D,
         sender: BlobSender,
-        limiter: &Limiter,
+        limiter: &TelegramLimiter,
     ) -> Result<()>;
 }
 
 impl TelegramExt for TelegramClient {
-    async fn download_all<D: Downloadable>(&mut self, d: &D, limiter: &Limiter) -> Result<Vec<u8>> {
+    async fn download_all<D: Downloadable>(
+        &mut self,
+        d: &D,
+        limiter: &TelegramLimiter,
+    ) -> Result<Vec<u8>> {
         let mut bytes = Vec::new();
         let mut download = self.iter_download(d);
 
-        let limiter_key = self.get_me().await?.id().to_string();
+        let limiter_key = self.get_me().await?.id();
 
         while let Some(chunk) = download.next_timeout().await? {
             bytes.extend_from_slice(&chunk);
-            limiter.wait(&limiter_key).await;
+            limiter.until_key_ready(&limiter_key).await;
         }
 
         Ok(bytes)
@@ -111,17 +120,17 @@ impl TelegramExt for TelegramClient {
         &mut self,
         d: &D,
         sender: BlobSender,
-        limiter: &Limiter,
+        limiter: &TelegramLimiter,
     ) -> Result<()> {
         trace!("Download start");
 
         let mut download = self.iter_download(d);
 
-        let limiter_key = self.get_me().await?.id().to_string();
+        let limiter_key = self.get_me().await?.id();
 
         let mut nchunk = 0;
         loop {
-            limiter.wait(&limiter_key).await;
+            limiter.until_key_ready(&limiter_key).await;
 
             match download.next_timeout().await {
                 Ok(Some(chunk)) => {
@@ -164,10 +173,10 @@ pub(super) struct Exporter {
 }
 
 impl Exporter {
-    #[instrument(level = "trace", skip_all, fields(chat = %chat.id(), user = %user.id(), account = %ws.account, workspace = %ws.workspace))]
+    #[instrument(level = "trace", skip_all, fields(chat = %chat.id(), user = %me.id(), account = %ws.account, workspace = %ws.workspace))]
     pub(super) async fn maybe_create(
         info_key: String,
-        user: &User,
+        me: &Arc<User>,
         chat: &Chat,
         ws: &WorkspaceIntegration,
         telegram: TelegramClient,
@@ -234,7 +243,7 @@ impl Exporter {
             };
 
             let info = DialogInfo {
-                telegram_user: user.id(),
+                telegram_user: me.id(),
                 telegram_type: chat.r#type(),
                 telegram_chat_id: chat.id(),
 
@@ -409,7 +418,7 @@ impl Exporter {
             Some(Media::Photo(photo)) => {
                 let blob = self
                     .telegram
-                    .download_all(&photo, self.global_services.limiter())
+                    .download_all(&photo, &self.global_services.limiters().get_file)
                     .await?;
 
                 let huly_blob_id = message.huly_blob_id();
@@ -479,7 +488,11 @@ impl Exporter {
                         .upload(huly_blob_id, length as usize, mime_type)?;
                 let download_result = self
                     .telegram
-                    .download_in_chunks(&document, sender, self.global_services.limiter())
+                    .download_in_chunks(
+                        &document,
+                        sender,
+                        &self.global_services.limiters().get_file,
+                    )
                     .await;
 
                 let _ = ready.await?;
