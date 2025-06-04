@@ -204,9 +204,9 @@ impl Exporter {
         } else {
             trace!("Chat info not found");
 
-            let card_title = chat.name().unwrap_or("No chat name").to_owned();
-
+            let card_title = chat.card_title();
             let is_private = !CONFIG.allowed_dialog_ids.contains(&chat.id().to_string());
+
             let (space, channel) = if is_private {
                 let person_id = tx.find_person(ws.account).await?.ok_or_else(|| {
                     warn!("Person not found");

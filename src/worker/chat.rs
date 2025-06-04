@@ -15,6 +15,7 @@ pub enum DialogType {
 
 pub trait ChatExt {
     fn r#type(&self) -> DialogType;
+    fn card_title(&self) -> String;
     fn ensure_person_request(&self) -> EnsurePersonRequest;
 }
 
@@ -24,6 +25,14 @@ impl ChatExt for Chat {
             Chat::User(_) => DialogType::User,
             Chat::Group(_) => DialogType::Group,
             Chat::Channel(_) => DialogType::Channel,
+        }
+    }
+
+    fn card_title(&self) -> String {
+        match self {
+            Chat::User(user) => user.full_name().clone(),
+            Chat::Group(group) => group.title().unwrap_or("Unknown Group").to_owned(),
+            Chat::Channel(channel) => channel.title().to_owned(),
         }
     }
 
