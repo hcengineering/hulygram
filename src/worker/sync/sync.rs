@@ -10,10 +10,9 @@ use crate::{
 };
 use anyhow::Result;
 use chrono::TimeDelta;
-use governor::Jitter;
 use grammers_client::{
     Client as TelegramClient,
-    types::{Chat, Message, PackedChat, User, dialog},
+    types::{Chat, Message, PackedChat, User},
 };
 use hulyrs::services::types::{AccountUuid, SocialIdId, WorkspaceUuid};
 use multimap::MultiMap;

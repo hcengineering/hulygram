@@ -153,6 +153,7 @@ impl SupervisorInner {
         }
     }
 
+    #[instrument(level = "trace", skip(self))]
     pub async fn shutdown_all(&self) {
         let mut receivers = Vec::new();
 
@@ -162,8 +163,11 @@ impl SupervisorInner {
             for (id, (sender, receiver)) in workers.iter() {
                 let receiver = receiver.resubscribe();
 
+                trace!(%id, "Shutting down worker");
                 match sender.send(Message::Shutdown).await {
                     Ok(()) => {
+                        trace!(%id, "Sent shutdown message");
+
                         receivers.push(receiver);
                     }
                     Err(error) => {
