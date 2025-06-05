@@ -8,3 +8,4 @@ allowed_dialog_ids = "4982993114,4937631480,1044298783,1974697595"
 get_file_rate_limit = 2
 blob_service_path = "http://localhost:4030"
 base_url = "https://hulygram.aristov.cc"
+dry_run = false

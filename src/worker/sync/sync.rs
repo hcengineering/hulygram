@@ -150,8 +150,10 @@ impl SyncProcess {
         loop {
             tokio::select! {
                 _ = persist_state.tick() => {
-                    if let Err(error) = state.persist().await {
-                        error!(%error, "Cannot persist state");
+                    if !crate::config::CONFIG.dry_run {
+                        if let Err(error) = state.persist().await {
+                            error!(%error, "Cannot persist state");
+                        }
                     }
                 }
 
@@ -225,10 +227,12 @@ impl SyncProcess {
                                 }
                             }
 
-                            let _ = state.persist().await;
+                            if !crate::config::CONFIG.dry_run {
+                                let _ = state.persist().await;
 
-                            if !is_limit {
-                                _ = exporter.set_complete().await;
+                                if !is_limit {
+                                    _ = exporter.set_complete().await;
+                                }
                             }
                         }
 

@@ -321,6 +321,8 @@ impl Exporter {
 
     #[instrument(level = "trace", skip_all)]
     pub async fn create(&mut self, message: &Message) -> Result<StateEntry> {
+        let dry_run = crate::config::CONFIG.dry_run;
+
         let person_request = message
             .sender()
             .unwrap_or(message.chat())
@@ -349,14 +351,16 @@ impl Exporter {
                 .build()
                 .unwrap();
 
-            self.global_services
-                .hulygun()
-                .request(
-                    self.info.huly_workspace,
-                    MessageRequestType::CreateMessage,
-                    create_event,
-                )
-                .await?;
+            if !dry_run {
+                self.global_services
+                    .hulygun()
+                    .request(
+                        self.info.huly_workspace,
+                        MessageRequestType::CreateMessage,
+                        create_event,
+                    )
+                    .await?;
+            }
 
             Ok(huly_message_id)
         };
@@ -379,14 +383,16 @@ impl Exporter {
                         .build()
                         .unwrap();
 
-                    self.global_services
-                        .hulygun()
-                        .request(
-                            self.info.huly_workspace,
-                            MessageRequestType::CreatePatch,
-                            patch_event,
-                        )
-                        .await?;
+                    if !dry_run {
+                        self.global_services
+                            .hulygun()
+                            .request(
+                                self.info.huly_workspace,
+                                MessageRequestType::CreatePatch,
+                                patch_event,
+                            )
+                            .await?;
+                    }
                 }
 
                 entry_builder.huly_message_id(*root_message_id);
@@ -463,14 +469,16 @@ impl Exporter {
                         .data(file_data)
                         .build()?;
 
-                    self.global_services
-                        .hulygun()
-                        .request(
-                            self.info.huly_workspace,
-                            MessageRequestType::CreateFile,
-                            create_file_event,
-                        )
-                        .await?;
+                    if !dry_run {
+                        self.global_services
+                            .hulygun()
+                            .request(
+                                self.info.huly_workspace,
+                                MessageRequestType::CreateFile,
+                                create_file_event,
+                            )
+                            .await?;
+                    }
 
                     entry_builder.huly_image_id(Some(huly_blob_id));
 
@@ -513,14 +521,16 @@ impl Exporter {
                         .data(file_data)
                         .build()?;
 
-                    self.global_services
-                        .hulygun()
-                        .request(
-                            self.info.huly_workspace,
-                            MessageRequestType::CreateFile,
-                            create_file,
-                        )
-                        .await?;
+                    if !dry_run {
+                        self.global_services
+                            .hulygun()
+                            .request(
+                                self.info.huly_workspace,
+                                MessageRequestType::CreateFile,
+                                create_file,
+                            )
+                            .await?;
+                    }
 
                     entry_builder.huly_image_id(Some(huly_blob_id));
                 }
@@ -539,6 +549,8 @@ impl Exporter {
         message: &Message,
         mut state_entry: StateEntry,
     ) -> Result<StateEntry> {
+        let dry_run = crate::config::CONFIG.dry_run;
+
         let person_request = message
             .sender()
             .unwrap_or(message.chat())
@@ -570,14 +582,16 @@ impl Exporter {
                     .build()
                     .unwrap();
 
-                self.global_services
-                    .hulygun()
-                    .request(
-                        self.info.huly_workspace,
-                        MessageRequestType::CreatePatch,
-                        patch.clone(),
-                    )
-                    .await?;
+                if !dry_run {
+                    self.global_services
+                        .hulygun()
+                        .request(
+                            self.info.huly_workspace,
+                            MessageRequestType::CreatePatch,
+                            patch.clone(),
+                        )
+                        .await?;
+                }
             }
         }
 

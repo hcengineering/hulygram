@@ -42,6 +42,8 @@ pub struct Config {
     pub blob_service_path: Url,
 
     pub base_url: Url,
+
+    pub dry_run: bool,
 }
 
 pub static CONFIG: LazyLock<Config> = LazyLock::new(|| {
