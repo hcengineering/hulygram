@@ -50,7 +50,10 @@ struct SyncProcess {
     chat: PackedChat,
     sender: mpsc::Sender<ImporterEvent>,
     export: JoinHandle<()>,
-    generate: JoinHandle<()>,
+    telegram: TelegramClient,
+    global_services: GlobalServices,
+    me: Arc<User>,
+    limit: Option<u32>,
 }
 
 enum ImporterEvent {
@@ -91,20 +94,15 @@ impl SyncProcess {
             let limit = exporter.limit();
 
             let export = task::spawn(Self::export_task(state, exporter, chat.pack(), receiver));
-            let generate = task::spawn(Self::generate_task(
-                telegram,
-                global_services,
-                me,
-                limit,
-                chat.pack(),
-                sender.clone(),
-            ));
 
             Ok(Some(SyncProcess {
                 chat: chat.pack(),
                 sender,
                 export,
-                generate,
+                telegram,
+                global_services,
+                me,
+                limit,
             }))
         } else {
             Ok(None)
@@ -114,10 +112,9 @@ impl SyncProcess {
     #[instrument(level = "trace", skip_all, fields(chat = %self.chat.id))]
     pub fn abort(&self) {
         self.export.abort();
-        self.generate.abort();
     }
 
-    pub async fn sync_message(&mut self, message: &Message) -> Result<()> {
+    pub async fn sync_message(&self, message: &Message) -> Result<()> {
         let chat_id = self.chat.id;
         let message_id = message.id();
 
@@ -130,7 +127,7 @@ impl SyncProcess {
         Ok(())
     }
 
-    pub async fn delete_messages(&mut self, messages: &[i32]) -> Result<()> {
+    pub async fn delete_messages(&self, messages: &[i32]) -> Result<()> {
         for id in messages {
             self.sender.send(ImporterEvent::Delete(*id)).await?;
         }
@@ -246,50 +243,43 @@ impl SyncProcess {
         }
     }
 
-    #[instrument(level = "trace", name="generate", skip(telegram, sender, global_services, me), fields(chat = %chat.id))]
-    async fn generate_task(
-        telegram: TelegramClient,
-        global_services: GlobalServices,
-        me: Arc<User>,
-        limit: Option<u32>,
-        chat: PackedChat,
-        sender: mpsc::Sender<ImporterEvent>,
-    ) {
-        let mut messages = telegram.iter_messages(chat);
+    async fn synchronize(&self) {
+        let mut messages = self.telegram.iter_messages(self.chat);
         let mut count = 0;
 
-        global_services
+        /*
+        self.global_services
             .limiters()
             .get_dialog
-            .until_key_ready(&me.id())
-            .await;
+            .until_key_ready(&self.me.id())
+            .await;*/
 
         loop {
             count += 1;
 
-            if let Some(limit) = limit {
+            if let Some(limit) = self.limit {
                 if count > limit {
                     trace!("Limit reached");
-                    let _ = sender.send(ImporterEvent::BatchEnd(true)).await;
+                    let _ = self.sender.send(ImporterEvent::BatchEnd(true)).await;
                     break;
                 }
             }
 
             let next = time::timeout(Duration::from_secs(30), messages.next());
 
-            global_services
+            self.global_services
                 .limiters()
                 .get_history
-                .until_key_ready(&me.id())
+                .until_key_ready(&self.me.id())
                 .await;
 
             match next.await {
                 Ok(Ok(Some(message))) => {
-                    let _ = sender.send(ImporterEvent::Message(message)).await;
+                    let _ = self.sender.send(ImporterEvent::Message(message)).await;
                 }
                 Ok(Ok(_)) => {
                     trace!("No more messages");
-                    let _ = sender.send(ImporterEvent::BatchEnd(false)).await;
+                    let _ = self.sender.send(ImporterEvent::BatchEnd(false)).await;
                     break;
                 }
 
@@ -309,7 +299,7 @@ impl SyncProcess {
 pub struct Sync {
     telegram: TelegramClient,
     config: Arc<WorkerConfig>,
-    syncs: MultiMap<i64, SyncProcess>,
+    syncs: MultiMap<i64, Arc<SyncProcess>>,
 }
 
 impl Sync {
@@ -357,7 +347,7 @@ impl Sync {
 
                     match sync {
                         Ok(Some(sync)) => {
-                            self.syncs.insert(chat_id, sync);
+                            self.syncs.insert(chat_id, Arc::new(sync));
                         }
                         Ok(None) => {}
                         Err(error) => {
@@ -367,6 +357,31 @@ impl Sync {
                 }
             }
         }
+
+        let syncs = self
+            .syncs
+            .flat_iter()
+            .map(|(_, sync)| sync.clone())
+            .collect::<Vec<_>>();
+
+        let semaphore = self
+            .config
+            .global_services
+            .limiters()
+            .sync_semaphore
+            .clone();
+
+        tokio::task::spawn(async move {
+            for sync in syncs {
+                // acquire sync permit
+                let permit = semaphore.clone().acquire_owned().await.unwrap();
+
+                tokio::task::spawn(async move {
+                    let _ = sync.synchronize().await;
+                    drop(permit);
+                });
+            }
+        });
 
         Ok(())
     }

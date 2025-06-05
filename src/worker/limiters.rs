@@ -1,9 +1,13 @@
+use std::sync::Arc;
+
 use governor::{
     Quota, RateLimiter,
     clock::{Clock, MonotonicClock},
     middleware::NoOpMiddleware,
     state::keyed::{DefaultHasher, DefaultKeyedStateStore},
 };
+
+use tokio::sync::Semaphore;
 
 use crate::config::CONFIG;
 
@@ -17,7 +21,7 @@ pub type TelegramLimiter = Limiter<i64>;
 pub struct Limiters {
     pub get_file: TelegramLimiter,
     pub get_history: TelegramLimiter,
-    pub get_dialog: TelegramLimiter,
+    pub sync_semaphore: Arc<Semaphore>,
 }
 
 impl Limiters {
@@ -30,19 +34,16 @@ impl Limiters {
         );
 
         let get_history = RateLimiter::dashmap_with_clock(
-            Quota::per_second(100.try_into().unwrap()).allow_burst(burst),
+            Quota::per_second(CONFIG.get_history_rate_limit).allow_burst(burst),
             MonotonicClock,
         );
 
-        let get_dialog = RateLimiter::dashmap_with_clock(
-            Quota::per_second(5.try_into().unwrap()).allow_burst(burst),
-            MonotonicClock,
-        );
+        let sync_semaphore = Arc::new(Semaphore::new(CONFIG.sync_process_limit));
 
         Self {
             get_file,
             get_history,
-            get_dialog,
+            sync_semaphore,
         }
     }
 }

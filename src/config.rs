@@ -38,6 +38,9 @@ pub struct Config {
     pub allowed_dialog_ids: HashSet<String>,
 
     pub get_file_rate_limit: NonZero<u32>,
+    pub get_history_rate_limit: NonZero<u32>,
+
+    pub sync_process_limit: usize,
 
     pub blob_service_path: Url,
 
