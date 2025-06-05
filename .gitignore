@@ -1,3 +1,4 @@
 /target
 /data
 Justfile
+.env.docker
