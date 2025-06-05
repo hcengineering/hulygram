@@ -1,6 +1,6 @@
 use std::{collections::HashMap, sync::Arc, time::Duration};
 
-use anyhow::{Result, anyhow};
+use anyhow::{Result, anyhow, bail};
 use grammers_client::{
     Client as TelegramClient,
     client::files::DownloadIter,
@@ -24,7 +24,7 @@ use uuid::Uuid;
 use super::{
     blob::{BlobClient, Sender as BlobSender},
     state::{Entry as StateEntry, EntryBuilder as StateEntryBuilder},
-    sync::DialogInfo,
+    sync::{DialogInfo, SyncProgress},
     tx::TransactorExt,
 };
 use crate::{
@@ -163,18 +163,20 @@ impl TelegramExt for TelegramClient {
 #[derive(Clone)]
 pub(super) struct Exporter {
     info_key: String,
-    pub info: DialogInfo,
+    pub info: Option<DialogInfo>,
+    chat: Chat,
+    me: Arc<User>,
+    ws: WorkspaceIntegration,
     telegram: TelegramClient,
     global_services: GlobalServices,
     workspace_services: WorkspaceServices,
-    blobs: BlobClient,
     groups: HashMap<i64, MessageId>,
     social_ids: HashMap<String, PersonId>,
 }
 
 impl Exporter {
     #[instrument(level = "trace", skip_all, fields(chat = %chat.id(), user = %me.id(), account = %ws.account, workspace = %ws.workspace))]
-    pub(super) async fn maybe_create(
+    pub(super) async fn new(
         info_key: String,
         me: &Arc<User>,
         chat: &Chat,
@@ -182,42 +184,54 @@ impl Exporter {
         telegram: TelegramClient,
         global_services: GlobalServices,
         workspace_services: WorkspaceServices,
-    ) -> Result<Option<Self>> {
+    ) -> Result<Self> {
         let info = global_services.kvs().get(&info_key).await?;
-
-        let tx = workspace_services.transactor();
-
-        let exporter = if let Some(info) = &info {
+        let info = if let Some(info) = &info {
             let info = serde_json::from_slice::<DialogInfo>(info)?;
-            let blobs = BlobClient::new(info.huly_workspace)?;
 
             trace!("Chat info found");
 
+            let tx = workspace_services.transactor();
             let is_found = tx.find_channel(&info.huly_channel).await?;
 
             if is_found {
-                Some(Self {
-                    info_key,
-                    info,
-                    telegram,
-                    global_services,
-                    workspace_services,
-                    blobs,
-                    groups: HashMap::new(),
-                    social_ids: HashMap::new(),
-                })
+                Some(info)
             } else {
                 trace!("Channel not found");
-                None
+                bail!("NoChannel")
             }
         } else {
             trace!("Chat info not found");
+            None
+        };
 
-            let card_title = chat.card_title();
-            let is_private = !CONFIG.allowed_dialog_ids.contains(&chat.id().to_string());
+        let exporter = Self {
+            info_key,
+            info,
+            telegram,
+            chat: chat.clone(),
+            me: me.clone(),
+            ws: ws.clone(),
+            global_services,
+            workspace_services,
+            groups: HashMap::new(),
+            social_ids: HashMap::new(),
+        };
+
+        Ok(exporter)
+    }
+
+    async fn ensure_channel(&mut self) -> Result<&mut DialogInfo> {
+        let tx = self.workspace_services.transactor();
+
+        if self.info.is_none() {
+            let card_title = self.chat.card_title();
+            let is_private = !CONFIG
+                .allowed_dialog_ids
+                .contains(&self.chat.id().to_string());
 
             let (space, channel) = if is_private {
-                let person_id = tx.find_person(ws.account).await?.ok_or_else(|| {
+                let person_id = tx.find_person(self.ws.account).await?.ok_or_else(|| {
                     warn!("Person not found");
                     anyhow!("NoPerson")
                 })?;
@@ -228,7 +242,7 @@ impl Exporter {
                 })?;
 
                 let channel = tx
-                    .create_channel(&ws.social_id, &space_id, &card_title)
+                    .create_channel(&self.ws.social_id, &space_id, &card_title)
                     .await?;
 
                 (space_id, channel)
@@ -236,66 +250,60 @@ impl Exporter {
                 let space = "card:space:Default".to_owned();
 
                 let channel = tx
-                    .create_channel(&ws.social_id, &space, &card_title)
+                    .create_channel(&self.ws.social_id, &space, &card_title)
                     .await?;
 
                 (space, channel)
             };
 
             let info = DialogInfo {
-                telegram_user: me.id(),
-                telegram_type: chat.r#type(),
-                telegram_chat_id: chat.id(),
+                telegram_user: self.me.id(),
+                telegram_type: self.chat.r#type(),
+                telegram_chat_id: self.chat.id(),
 
-                huly_workspace: ws.workspace,
-                huly_account: ws.account,
-                huly_social_id: ws.social_id.clone(),
+                huly_workspace: self.ws.workspace,
+                huly_account: self.ws.account,
+                huly_social_id: self.ws.social_id.clone(),
                 huly_channel: channel.clone(),
                 huly_space: space,
                 huly_title: card_title,
 
-                is_complete: false,
+                progress: SyncProgress::Unsynced,
             };
 
-            trace!(channel = %info.huly_channel, "Channel created");
+            if !crate::config::CONFIG.dry_run {
+                self.global_services
+                    .kvs()
+                    .upsert(&self.info_key, &serde_json::to_vec(&info)?)
+                    .await?;
+            }
 
-            global_services
-                .kvs()
-                .upsert(&info_key, &serde_json::to_vec(&info)?)
-                .await?;
+            self.info = Some(info);
+        }
 
-            let blobs = BlobClient::new(info.huly_workspace)?;
-
-            Some(Self {
-                info_key,
-                info,
-                telegram,
-                global_services,
-                workspace_services,
-                blobs,
-                groups: HashMap::new(),
-                social_ids: HashMap::new(),
-            })
-        };
-
-        Ok(exporter)
+        Ok(self.info.as_mut().unwrap())
     }
 
-    pub fn limit(&self) -> Option<u32> {
-        if self.info.is_complete {
-            Some(1000)
-        } else {
-            None
-        }
+    pub fn progress(&self) -> SyncProgress {
+        self.info.as_ref().map(|i| i.progress).unwrap_or_default()
     }
 
     #[instrument(level = "trace", skip(self))]
-    pub async fn set_complete(&mut self) -> Result<()> {
-        self.info.is_complete = true;
-        self.global_services
-            .kvs()
-            .upsert(&self.info_key, &serde_json::to_vec(&self.info)?)
-            .await?;
+    pub async fn set_progress(&mut self, progress: SyncProgress) -> Result<()> {
+        let info = self.ensure_channel().await?;
+
+        if info.progress != progress {
+            info.progress = progress;
+
+            let info = info.clone();
+
+            if !crate::config::CONFIG.dry_run {
+                self.global_services
+                    .kvs()
+                    .upsert(&self.info_key, &serde_json::to_vec(&info)?)
+                    .await?;
+            }
+        }
 
         Ok(())
     }
@@ -322,6 +330,7 @@ impl Exporter {
     #[instrument(level = "trace", skip_all)]
     pub async fn create(&mut self, message: &Message) -> Result<StateEntry> {
         let dry_run = crate::config::CONFIG.dry_run;
+        let info = self.ensure_channel().await?.clone();
 
         let person_request = message
             .sender()
@@ -330,7 +339,7 @@ impl Exporter {
 
         let social_id = self.ensure_person(person_request).await?;
 
-        let huly_channel_id = &self.info.huly_channel;
+        let huly_channel_id = &info.huly_channel;
 
         let mut entry_builder = StateEntryBuilder::default();
 
@@ -342,7 +351,7 @@ impl Exporter {
 
             let create_event = CreateMessageEventBuilder::default()
                 .id(&huly_message_id.to_string())
-                .external_id(format!("{}:{}", self.info.telegram_chat_id, message.id()))
+                .external_id(format!("{}:{}", info.telegram_chat_id, message.id()))
                 .card(huly_channel_id)
                 .card_type("chat:masterTag:Channel")
                 .content(message.markdown_text())
@@ -355,7 +364,7 @@ impl Exporter {
                 self.global_services
                     .hulygun()
                     .request(
-                        self.info.huly_workspace,
+                        info.huly_workspace,
                         MessageRequestType::CreateMessage,
                         create_event,
                     )
@@ -387,7 +396,7 @@ impl Exporter {
                         self.global_services
                             .hulygun()
                             .request(
-                                self.info.huly_workspace,
+                                info.huly_workspace,
                                 MessageRequestType::CreatePatch,
                                 patch_event,
                             )
@@ -432,9 +441,10 @@ impl Exporter {
 
                 if let Ok(image_info) = imageinfo::ImageInfo::from_raw_data(&blob) {
                     let ready = {
+                        let blobs = BlobClient::new(info.huly_workspace)?;
+
                         let (sender, ready) =
-                            self.blobs
-                                .upload(huly_blob_id, length, image_info.mimetype)?;
+                            blobs.upload(huly_blob_id, length, image_info.mimetype)?;
 
                         sender.send(Ok(blob)).await?;
 
@@ -473,7 +483,7 @@ impl Exporter {
                         self.global_services
                             .hulygun()
                             .request(
-                                self.info.huly_workspace,
+                                info.huly_workspace,
                                 MessageRequestType::CreateFile,
                                 create_file_event,
                             )
@@ -491,9 +501,9 @@ impl Exporter {
                 let mime_type = document.mime_type().unwrap_or("application/binary");
                 let length = document.size();
 
-                let (sender, ready) =
-                    self.blobs
-                        .upload(huly_blob_id, length as usize, mime_type)?;
+                let blobs = BlobClient::new(info.huly_workspace)?;
+
+                let (sender, ready) = blobs.upload(huly_blob_id, length as usize, mime_type)?;
                 let download_result = self
                     .telegram
                     .download_in_chunks(
@@ -525,7 +535,7 @@ impl Exporter {
                         self.global_services
                             .hulygun()
                             .request(
-                                self.info.huly_workspace,
+                                info.huly_workspace,
                                 MessageRequestType::CreateFile,
                                 create_file,
                             )
@@ -558,7 +568,7 @@ impl Exporter {
 
         let social_id = self.ensure_person(person_request).await?;
 
-        let card = &self.info.huly_channel;
+        let info = self.ensure_channel().await?.clone();
 
         let message_id = if let Some(group) = message.grouped_id() {
             self.groups.get(&group).map(ToOwned::to_owned)
@@ -577,7 +587,7 @@ impl Exporter {
                     .message(&message_id.to_string())
                     .message_created(message.date())
                     .creator(&social_id)
-                    .card(card)
+                    .card(&info.huly_channel)
                     .data(patch_data)
                     .build()
                     .unwrap();
@@ -586,7 +596,7 @@ impl Exporter {
                     self.global_services
                         .hulygun()
                         .request(
-                            self.info.huly_workspace,
+                            info.huly_workspace,
                             MessageRequestType::CreatePatch,
                             patch.clone(),
                         )
@@ -600,10 +610,10 @@ impl Exporter {
         Ok(state_entry)
     }
 
-    pub(super) async fn delete(&mut self, message: i32) -> Result<()> {
-        let _message_id = (self.info.telegram_chat_id, message).huly_message_id();
+    pub(super) async fn delete(&mut self, _message: i32) -> Result<()> {
+        //let _message_id = (self.info.telegram_chat_id, message).huly_message_id();
 
-        let _workspace = &self.info.huly_workspace;
+        //let _workspace = &self.info.huly_workspace;
 
         /*
         let remove = RemoveMessagesEventBuilder::default()

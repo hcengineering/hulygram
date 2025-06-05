@@ -1,10 +1,14 @@
-use std::{collections::HashSet, sync::Arc, time::Duration};
+use std::{
+    collections::HashSet,
+    sync::{Arc, atomic::AtomicU32},
+    time::Duration,
+};
 
 use crate::{
     integration::{TelegramIntegration, WorkspaceIntegration},
     worker::{
         WorkerConfig,
-        chat::DialogType,
+        chat::{ChatExt, DialogType},
         services::{GlobalServices, WorkspaceServices},
     },
 };
@@ -12,7 +16,7 @@ use anyhow::Result;
 use chrono::TimeDelta;
 use grammers_client::{
     Client as TelegramClient,
-    types::{Chat, Message, PackedChat, User},
+    types::{Chat, Message, User},
 };
 use hulyrs::services::types::{AccountUuid, SocialIdId, WorkspaceUuid};
 use multimap::MultiMap;
@@ -26,6 +30,14 @@ use tokio::{
 use tracing::*;
 
 use super::{export::Exporter, state::SyncState};
+
+#[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SyncProgress {
+    #[default]
+    Unsynced,
+    Progress(i32),
+    Complete,
+}
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct DialogInfo {
@@ -42,18 +54,18 @@ pub struct DialogInfo {
     pub huly_space: String,
     pub huly_title: String,
 
-    #[serde(default = "bool::default")]
-    pub is_complete: bool,
+    #[serde(default)]
+    pub progress: SyncProgress,
 }
 
 struct SyncProcess {
-    chat: PackedChat,
+    chat: Chat,
     sender: mpsc::Sender<ImporterEvent>,
     export: JoinHandle<()>,
     telegram: TelegramClient,
     global_services: GlobalServices,
     me: Arc<User>,
-    limit: Option<u32>,
+    progress: SyncProgress,
 }
 
 enum ImporterEvent {
@@ -70,13 +82,13 @@ impl SyncProcess {
         ws: &WorkspaceIntegration,
         global_services: GlobalServices,
         telegram: TelegramClient,
-    ) -> Result<Option<Self>> {
+    ) -> Result<Self> {
         let chat_key = format!("chat_{}_{}_{}", me.id(), chat.id(), ws.workspace);
         let state_key = format!("sta_{}_{}_{}", me.id(), chat.id(), ws.workspace);
 
         let workspace_services = WorkspaceServices::new(&ws.transactor_url, ws.workspace)?;
 
-        let exporter = Exporter::maybe_create(
+        let exporter = Exporter::new(
             chat_key,
             &me,
             chat,
@@ -87,35 +99,31 @@ impl SyncProcess {
         )
         .await?;
 
-        if let Some(exporter) = exporter {
-            let (sender, receiver) = mpsc::channel(1);
+        let (sender, receiver) = mpsc::channel(1);
 
-            let state = SyncState::load(chat.id(), state_key, global_services.clone()).await?;
-            let limit = exporter.limit();
+        let state = SyncState::load(chat.id(), state_key, global_services.clone()).await?;
+        let progress = exporter.progress();
 
-            let export = task::spawn(Self::export_task(state, exporter, chat.pack(), receiver));
+        let export = task::spawn(Self::export_task(state, exporter, chat.clone(), receiver));
 
-            Ok(Some(SyncProcess {
-                chat: chat.pack(),
-                sender,
-                export,
-                telegram,
-                global_services,
-                me,
-                limit,
-            }))
-        } else {
-            Ok(None)
-        }
+        Ok(SyncProcess {
+            chat: chat.clone(),
+            sender,
+            export,
+            telegram,
+            global_services,
+            me,
+            progress,
+        })
     }
 
-    #[instrument(level = "trace", skip_all, fields(chat = %self.chat.id))]
+    #[instrument(level = "trace", skip_all, fields(chat = %self.chat.id()))]
     pub fn abort(&self) {
         self.export.abort();
     }
 
     pub async fn sync_message(&self, message: &Message) -> Result<()> {
-        let chat_id = self.chat.id;
+        let chat_id = self.chat.id();
         let message_id = message.id();
 
         self.sender
@@ -135,15 +143,17 @@ impl SyncProcess {
         Ok(())
     }
 
-    #[instrument(level = "trace", name="export", skip(state, exporter, chat, receiver), fields(chat_id = %chat.id))]
+    #[instrument(level = "debug", name="export", skip(state, exporter, chat, receiver), fields(chat_id = %chat.id(), chat_name = %chat.card_title()))]
     async fn export_task(
         mut state: SyncState,
         mut exporter: Exporter,
-        chat: PackedChat,
+        chat: Chat,
         mut receiver: mpsc::Receiver<ImporterEvent>,
     ) {
+        let mut progress = exporter.progress();
         let mut seen = HashSet::new();
         let mut persist_state = time::interval(Duration::from_secs(30));
+
         loop {
             tokio::select! {
                 _ = persist_state.tick() => {
@@ -151,6 +161,8 @@ impl SyncProcess {
                         if let Err(error) = state.persist().await {
                             error!(%error, "Cannot persist state");
                         }
+
+                        _ = exporter.set_progress(progress).await;
                     }
                 }
 
@@ -188,6 +200,7 @@ impl SyncProcess {
 
                             match result {
                                 Ok(Some(entry)) => {
+                                    progress = SyncProgress::Progress(message.id());
                                     state.upsert(&entry);
                                 }
                                 Ok(None) => {}
@@ -199,10 +212,6 @@ impl SyncProcess {
                         }
 
                         Some(ImporterEvent::Delete(message)) => {
-                            let span = span!(Level::TRACE, "Delete", telegram_id = message);
-                            let _enter = span.enter();
-
-
                             if state.lookup(message).is_some() {
                                 if let Err(error) = exporter.delete(message).await {
                                     error!(%error);
@@ -212,8 +221,10 @@ impl SyncProcess {
                             }
                         }
 
-                        Some(ImporterEvent::BatchEnd(is_limit)) => {
-                            trace!(is_limit, "Batch end");
+                        Some(ImporterEvent::BatchEnd(_progress)) => {
+                            debug!("Batch end");
+
+                            progress = SyncProgress::Complete;
 
                             let min = seen.iter().fold(i32::MAX, |acc, id| acc.min(*id));
 
@@ -226,10 +237,7 @@ impl SyncProcess {
 
                             if !crate::config::CONFIG.dry_run {
                                 let _ = state.persist().await;
-
-                                if !is_limit {
-                                    _ = exporter.set_complete().await;
-                                }
+                                _ = exporter.set_progress(progress).await;
                             }
                         }
 
@@ -243,8 +251,16 @@ impl SyncProcess {
         }
     }
 
-    async fn synchronize(&self) {
-        let mut messages = self.telegram.iter_messages(self.chat);
+    #[instrument(level = "debug", skip_all, fields(id = _id,  telegram_id = %self.me.id(), chat_id = %self.chat.id(), chat_name = %self.chat.card_title()))]
+    async fn synchronize(&self, _id: u32) {
+        debug!(progress = ?self.progress, "Synchronisation begin");
+
+        let mut messages = self.telegram.iter_messages(self.chat.pack());
+        if let SyncProgress::Progress(offset) = self.progress {
+            debug!(offset, "Continue from offset");
+            messages = messages.offset_id(offset);
+        }
+
         let mut count = 0;
 
         /*
@@ -257,9 +273,10 @@ impl SyncProcess {
         loop {
             count += 1;
 
-            if let Some(limit) = self.limit {
-                if count > limit {
-                    trace!("Limit reached");
+            // if complete - break after limit reached
+            if self.progress == SyncProgress::Complete {
+                if count >= 100 {
+                    debug!("Limit reached");
                     let _ = self.sender.send(ImporterEvent::BatchEnd(true)).await;
                     break;
                 }
@@ -278,8 +295,14 @@ impl SyncProcess {
                     let _ = self.sender.send(ImporterEvent::Message(message)).await;
                 }
                 Ok(Ok(_)) => {
-                    trace!("No more messages");
-                    let _ = self.sender.send(ImporterEvent::BatchEnd(false)).await;
+                    debug!("No more messages");
+                    let _ = self
+                        .sender
+                        .send(ImporterEvent::BatchEnd(matches!(
+                            self.progress,
+                            SyncProgress::Complete
+                        )))
+                        .await;
                     break;
                 }
 
@@ -293,6 +316,8 @@ impl SyncProcess {
                 }
             }
         }
+
+        debug!(count, "Synchronization end");
     }
 }
 
@@ -346,10 +371,9 @@ impl Sync {
                     .await;
 
                     match sync {
-                        Ok(Some(sync)) => {
+                        Ok(sync) => {
                             self.syncs.insert(chat_id, Arc::new(sync));
                         }
-                        Ok(None) => {}
                         Err(error) => {
                             error!(%error, "Cannot spawn sync for chat {}", chat_id);
                         }
@@ -358,9 +382,12 @@ impl Sync {
             }
         }
 
-        let syncs = self
-            .syncs
-            .flat_iter()
+        let mut syncs = self.syncs.flat_iter().collect::<Vec<_>>();
+        syncs.sort_by_key(|(channel_id, _)| *channel_id);
+        syncs.reverse();
+
+        let syncs = syncs
+            .into_iter()
             .map(|(_, sync)| sync.clone())
             .collect::<Vec<_>>();
 
@@ -372,12 +399,20 @@ impl Sync {
             .clone();
 
         tokio::task::spawn(async move {
+            static IDS: AtomicU32 = AtomicU32::new(0);
+
             for sync in syncs {
-                // acquire sync permit
+                let id = IDS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+
                 let permit = semaphore.clone().acquire_owned().await.unwrap();
+                trace!(
+                    id,
+                    permits = semaphore.available_permits(),
+                    "Sync permit acquired"
+                );
 
                 tokio::task::spawn(async move {
-                    let _ = sync.synchronize().await;
+                    let _ = sync.synchronize(id).await;
                     drop(permit);
                 });
             }
