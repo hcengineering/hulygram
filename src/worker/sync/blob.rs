@@ -83,7 +83,7 @@ impl BlobClient {
                 }
 
                 Err(error) => {
-                    error!(%id, ?error, "Error while uploading file");
+                    error!(%id, %error, "Error while uploading file");
 
                     let _ = ready_sender.send(Err(error));
                 }
