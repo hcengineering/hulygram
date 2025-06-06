@@ -40,15 +40,15 @@ struct Segment {
 
 impl Segment {
     fn load(bytes: &[u8]) -> Result<Self> {
-        //ciborium::from_reader(bytes)
-        Ok(serde_json::from_slice(bytes)?)
+        Ok(ciborium::from_reader(bytes)?)
+        //Ok(serde_json::from_slice(bytes)?)
     }
 
     fn store(&self) -> Result<Vec<u8>> {
-        //let mut bytes = Vec::new();
-        //ciborium::into_writer(self, &mut bytes)?;
-        //Ok(bytes)
-        Ok(serde_json::to_vec(self)?)
+        let mut bytes = Vec::new();
+        ciborium::into_writer(self, &mut bytes)?;
+        Ok(bytes)
+        //Ok(serde_json::to_vec(self)?)
     }
 }
 
@@ -197,11 +197,16 @@ impl SyncState {
 
             self.is_dirty = false;
 
-            // only if rotate
-            //self.deleted.clear();
-            //self.added.clear();
+            trace!(segment, "State persisted");
 
-            trace!("State persisted");
+            if bytes.len() > 1024 * 200 {
+                // rotate
+                self.segment = Some(segment + 1);
+                self.deleted.clear();
+                self.added.clear();
+
+                trace!(segment = self.segment.unwrap(), "State rotated");
+            }
         }
 
         Ok(())
