@@ -961,7 +961,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cea14ef9355e3beab063703aa9dab15afd25f0667c341310c1e5274bb1d0da18"
 dependencies = [
  "libc",
- "windows-sys 0.52.0",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -1200,14 +1200,15 @@ dependencies = [
 [[package]]
 name = "grammers-client"
 version = "0.7.0"
+source = "git+https://github.com/aav/grammers#fc1a2861f6dbb78374edf6bb0f7ab551514489bb"
 dependencies = [
  "chrono",
  "futures-util",
- "grammers-crypto 0.7.0",
- "grammers-mtproto 0.7.0",
- "grammers-mtsender 0.7.0",
+ "grammers-crypto",
+ "grammers-mtproto",
+ "grammers-mtsender",
  "grammers-session",
- "grammers-tl-types 0.7.0",
+ "grammers-tl-types",
  "locate-locale",
  "log",
  "md5",
@@ -1222,22 +1223,6 @@ dependencies = [
 [[package]]
 name = "grammers-crypto"
 version = "0.7.0"
-dependencies = [
- "aes",
- "ctr",
- "getrandom 0.2.16",
- "glass_pumpkin",
- "hmac",
- "num-bigint",
- "num-traits",
- "pbkdf2",
- "sha1",
- "sha2",
-]
-
-[[package]]
-name = "grammers-crypto"
-version = "0.7.0"
 source = "git+https://github.com/aav/grammers#fc1a2861f6dbb78374edf6bb0f7ab551514489bb"
 dependencies = [
  "aes",
@@ -1255,52 +1240,18 @@ dependencies = [
 [[package]]
 name = "grammers-mtproto"
 version = "0.7.0"
-dependencies = [
- "bytes",
- "crc32fast",
- "flate2",
- "getrandom 0.2.16",
- "grammers-crypto 0.7.0",
- "grammers-tl-types 0.7.0",
- "log",
- "num-bigint",
- "sha1",
- "web-time",
-]
-
-[[package]]
-name = "grammers-mtproto"
-version = "0.7.0"
 source = "git+https://github.com/aav/grammers#fc1a2861f6dbb78374edf6bb0f7ab551514489bb"
 dependencies = [
  "bytes",
  "crc32fast",
  "flate2",
  "getrandom 0.2.16",
- "grammers-crypto 0.7.0 (git+https://github.com/aav/grammers)",
- "grammers-tl-types 0.7.0 (git+https://github.com/aav/grammers)",
+ "grammers-crypto",
+ "grammers-tl-types",
  "log",
  "num-bigint",
  "sha1",
  "web-time",
-]
-
-[[package]]
-name = "grammers-mtsender"
-version = "0.7.0"
-dependencies = [
- "async_io_stream",
- "bytes",
- "futures-util",
- "grammers-crypto 0.7.0",
- "grammers-mtproto 0.7.0",
- "grammers-tl-types 0.7.0",
- "log",
- "tokio",
- "wasm-bindgen-futures",
- "web-sys",
- "web-time",
- "ws_stream_wasm",
 ]
 
 [[package]]
@@ -1311,9 +1262,9 @@ dependencies = [
  "async_io_stream",
  "bytes",
  "futures-util",
- "grammers-crypto 0.7.0 (git+https://github.com/aav/grammers)",
- "grammers-mtproto 0.7.0 (git+https://github.com/aav/grammers)",
- "grammers-tl-types 0.7.0 (git+https://github.com/aav/grammers)",
+ "grammers-crypto",
+ "grammers-mtproto",
+ "grammers-tl-types",
  "log",
  "tokio",
  "wasm-bindgen-futures",
@@ -1325,11 +1276,12 @@ dependencies = [
 [[package]]
 name = "grammers-session"
 version = "0.7.0"
+source = "git+https://github.com/aav/grammers#fc1a2861f6dbb78374edf6bb0f7ab551514489bb"
 dependencies = [
- "grammers-crypto 0.7.0",
- "grammers-tl-gen 0.7.0",
- "grammers-tl-parser 1.1.2",
- "grammers-tl-types 0.7.0",
+ "grammers-crypto",
+ "grammers-tl-gen",
+ "grammers-tl-parser",
+ "grammers-tl-types",
  "log",
  "web-time",
 ]
@@ -1337,23 +1289,9 @@ dependencies = [
 [[package]]
 name = "grammers-tl-gen"
 version = "0.7.0"
-dependencies = [
- "grammers-tl-parser 1.1.2",
-]
-
-[[package]]
-name = "grammers-tl-gen"
-version = "0.7.0"
 source = "git+https://github.com/aav/grammers#fc1a2861f6dbb78374edf6bb0f7ab551514489bb"
 dependencies = [
- "grammers-tl-parser 1.1.2 (git+https://github.com/aav/grammers)",
-]
-
-[[package]]
-name = "grammers-tl-parser"
-version = "1.1.2"
-dependencies = [
- "crc32fast",
+ "grammers-tl-parser",
 ]
 
 [[package]]
@@ -1367,18 +1305,10 @@ dependencies = [
 [[package]]
 name = "grammers-tl-types"
 version = "0.7.0"
-dependencies = [
- "grammers-tl-gen 0.7.0",
- "grammers-tl-parser 1.1.2",
-]
-
-[[package]]
-name = "grammers-tl-types"
-version = "0.7.0"
 source = "git+https://github.com/aav/grammers#fc1a2861f6dbb78374edf6bb0f7ab551514489bb"
 dependencies = [
- "grammers-tl-gen 0.7.0 (git+https://github.com/aav/grammers)",
- "grammers-tl-parser 1.1.2 (git+https://github.com/aav/grammers)",
+ "grammers-tl-gen",
+ "grammers-tl-parser",
 ]
 
 [[package]]
@@ -1554,7 +1484,7 @@ checksum = "df3b46402a9d5adb4c86a0cf463f42e19994e3ee891101b1841f30a545cb49a9"
 
 [[package]]
 name = "hulygram"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "actix-cors",
  "actix-web",
@@ -1569,7 +1499,7 @@ dependencies = [
  "futures",
  "governor",
  "grammers-client",
- "grammers-mtsender 0.7.0 (git+https://github.com/aav/grammers)",
+ "grammers-mtsender",
  "hulyrs",
  "imageinfo",
  "ksuid",
@@ -2725,7 +2655,7 @@ dependencies = [
  "once_cell",
  "socket2",
  "tracing",
- "windows-sys 0.52.0",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -3188,7 +3118,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys",
- "windows-sys 0.52.0",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -3643,7 +3573,7 @@ dependencies = [
  "getrandom 0.3.3",
  "once_cell",
  "rustix",
- "windows-sys 0.52.0",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]

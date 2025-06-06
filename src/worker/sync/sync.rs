@@ -23,7 +23,7 @@ use serde::{Deserialize, Serialize};
 use tokio::{
     self,
     sync::{Mutex, mpsc},
-    task::{self, Builder as TaskBuilder, JoinHandle},
+    task::{Builder as TaskBuilder, JoinHandle},
     time::{self, Duration, Instant},
 };
 use tracing::*;
@@ -111,7 +111,6 @@ impl SyncProcess {
             SyncProcess {
                 chat: chat.clone(),
                 sender,
-                //        export,
                 telegram,
                 global_services,
                 me,
