@@ -1,7 +1,6 @@
 use std::{
     collections::HashSet,
     sync::{Arc, atomic::AtomicU32},
-    time::Duration,
 };
 
 use crate::{

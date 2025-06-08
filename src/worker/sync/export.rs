@@ -191,8 +191,10 @@ impl Exporter {
 
             trace!("Chat info found");
 
-            let tx = workspace_services.transactor();
-            let is_found = tx.find_channel(&info.huly_channel).await?;
+            //let tx = workspace_services.transactor();
+            //let is_found = tx.find_channel(&info.huly_channel).await?;
+
+            let is_found = true;
 
             if is_found {
                 Some(info)

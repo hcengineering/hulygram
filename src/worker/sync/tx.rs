@@ -1,3 +1,5 @@
+use std::collections::HashSet;
+
 use anyhow::{Ok, Result};
 use hulyrs::services::{
     transactor::{
@@ -17,7 +19,10 @@ pub(super) trait TransactorExt {
         title: &str,
     ) -> impl Future<Output = Result<String>>;
 
-    fn find_channel(&self, channel_id: &str) -> impl Future<Output = Result<bool>>;
+    #[allow(dead_code)]
+    async fn enumerate_channels(&self) -> Result<HashSet<String>>;
+
+    fn _find_channel(&self, channel_id: &str) -> impl Future<Output = Result<bool>>;
 
     fn find_person(&self, person: PersonUuid) -> impl Future<Output = Result<Option<PersonId>>>;
 
@@ -62,7 +67,7 @@ impl TransactorExt for TransactorClient {
         Ok(channel_id)
     }
 
-    async fn find_channel(&self, channel_id: &str) -> Result<bool> {
+    async fn _find_channel(&self, channel_id: &str) -> Result<bool> {
         let query = json!({
             "_id": channel_id,
         });
@@ -75,6 +80,27 @@ impl TransactorExt for TransactorClient {
             .is_some();
 
         Ok(is_found)
+    }
+
+    async fn enumerate_channels(&self) -> Result<HashSet<String>> {
+        let query = json!({
+            //
+        });
+
+        let options = FindOptionsBuilder::default().project("_id").build()?;
+
+        #[derive(serde::Deserialize)]
+        struct Channel {
+            _id: String,
+        }
+
+        Ok(self
+            .find_all::<_, Channel>("chat:masterTag:Channel", query, &options)
+            .await?
+            .value
+            .into_iter()
+            .map(|v| v._id)
+            .collect::<HashSet<_>>())
     }
 
     #[instrument(level = "trace", skip(self))]
