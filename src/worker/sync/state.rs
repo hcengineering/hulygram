@@ -86,7 +86,6 @@ pub struct SyncState {
 
     services: GlobalServices,
 
-    pub is_virgin: bool,
     is_dirty: bool,
 }
 
@@ -119,7 +118,6 @@ impl SyncState {
             deleted: HashSet::new(),
             services,
             is_dirty: false,
-            is_virgin: true,
         };
 
         if let Some((last, others)) = segments.split_last() {
@@ -142,8 +140,6 @@ impl SyncState {
             }
 
             state.deleted = last.deleted.to_owned();
-
-            state.is_virgin = false;
         }
 
         Ok(state)
