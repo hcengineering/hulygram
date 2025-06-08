@@ -6,7 +6,7 @@ use tokio::{
         Mutex, broadcast,
         mpsc::{self, Sender},
     },
-    task, time,
+    time,
 };
 use tracing::*;
 
@@ -84,8 +84,9 @@ impl SupervisorInner {
             };
 
             trace!(%id, "Spawn worker");
+            let task_name = format!("worker-{}", id);
 
-            task::spawn(async move {
+            let task = async move {
                 'outer: loop {
                     let id = id.clone();
 
@@ -147,7 +148,9 @@ impl SupervisorInner {
                 workers.lock().await.remove(&id);
 
                 let _ = shutdown_sender.send(id);
-            });
+            };
+
+            let _ = tokio::task::Builder::new().name(&task_name).spawn(task);
 
             sender
         }

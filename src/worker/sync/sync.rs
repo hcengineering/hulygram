@@ -24,8 +24,8 @@ use serde::{Deserialize, Serialize};
 use tokio::{
     self,
     sync::{Mutex, mpsc},
-    task::{self, JoinHandle},
-    time,
+    task::{self, Builder as TaskBuilder, JoinHandle},
+    time::{self, Duration, Instant},
 };
 use tracing::*;
 
@@ -104,7 +104,9 @@ impl SyncProcess {
         let state = SyncState::load(chat.id(), state_key, global_services.clone()).await?;
         let progress = exporter.progress();
 
-        let export = task::spawn(Self::export_task(state, exporter, chat.clone(), receiver));
+        let export = TaskBuilder::new()
+            .name(&format!("exporter-{}", chat.id()))
+            .spawn(Self::export_task(state, exporter, chat.clone(), receiver))?;
 
         Ok((
             SyncProcess {
@@ -401,7 +403,7 @@ impl Sync {
 
         let cleanup = self.cleanup.clone();
 
-        let handle = tokio::task::spawn(async move {
+        let task = async move {
             static IDS: AtomicU32 = AtomicU32::new(0);
 
             for sync in syncs {
@@ -414,14 +416,27 @@ impl Sync {
                     "Sync permit acquired"
                 );
 
-                let handle = tokio::task::spawn(async move {
-                    let _ = sync.synchronize(id).await;
-                    drop(permit);
-                });
+                let sync = TaskBuilder::new()
+                    .name(&format!("sync-{}", id))
+                    .spawn(async move {
+                        let _ = sync.synchronize(id).await;
+                        drop(permit);
+                    });
 
-                cleanup.lock().await.push(handle);
+                match sync {
+                    Ok(handle) => {
+                        cleanup.lock().await.push(handle);
+                    }
+                    Err(error) => {
+                        error!(%error, "Cannot spawn sync");
+                    }
+                }
             }
-        });
+        };
+
+        let handle = TaskBuilder::new()
+            .name(&format!("scheduler-{}", self.config.id))
+            .spawn(task)?;
 
         self.cleanup.lock().await.push(handle);
 

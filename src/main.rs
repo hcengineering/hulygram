@@ -1,7 +1,14 @@
-use tokio::{select, signal::unix::{signal, SignalKind}};
-use config::CONFIG;
+#[allow(unused_imports)]
+use std::time::Duration;
+
+#[allow(unused_imports)]
+use console_subscriber::ConsoleLayer;
 use hulyrs::services::jwt::ClaimsBuilder;
-use worker::{GlobalServices};
+use tokio::{
+    select,
+    signal::unix::{SignalKind, signal},
+};
+use worker::GlobalServices;
 
 mod config;
 mod etc;
@@ -9,29 +16,38 @@ mod http;
 mod integration;
 mod worker;
 
+use config::CONFIG;
+
 pub fn initialize_tracing() {
     use tracing_subscriber::{filter::targets::Targets, prelude::*};
 
-    //let console_layer = console_subscriber::spawn();
+    /*
+    let tokio_console = {
+        ConsoleLayer::builder()
+            .retention(Duration::from_secs(30))
+            .spawn()
+    };*/
 
-    let level = tracing::Level::TRACE;
+    let stdout_logger = {
+        let level = config::hulyrs::CONFIG.log;
 
-    let filter = Targets::default()
-        .with_target(env!("CARGO_PKG_NAME"), level)
-        .with_target("grammers", tracing::Level::INFO)
-        //.with_target("tokio", tracing::Level::TRACE)
-        //.with_target("runtime", tracing::Level::TRACE)
-        .with_target("hulyrs::service", config::hulyrs::CONFIG.log)
+        let filter = Targets::default()
+            .with_target(env!("CARGO_PKG_NAME"), level)
+            .with_target("grammers", tracing::Level::INFO)
+            //.with_target("tokio", tracing::Level::TRACE)
+            //.with_target("runtime", tracing::Level::TRACE)
+            .with_target("hulyrs::service", config::hulyrs::CONFIG.log);
         //.with_target("actix", tracing::Level::DEBUG)
         //.with_target("reqwest", tracing::Level::TRACE)
-        
-        ;
-    let format = tracing_subscriber::fmt::layer().compact();
+
+        tracing_subscriber::fmt::layer()
+            .compact()
+            .with_filter(filter)
+    };
 
     tracing_subscriber::registry()
-        //.with(console_layer)
-        .with(filter)
-        .with(format)
+        //.with(tokio_console)
+        .with(stdout_logger)
         .init();
 }
 
@@ -77,7 +93,7 @@ async fn main() -> anyhow::Result<()> {
             abort_http.stop(false).await;
             tracing::info!("Received SIGQUIT");
         }
-    
+
         _ = http  => {
             tracing::error!("http server terminated unexpectedly");
         }

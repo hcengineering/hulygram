@@ -708,6 +708,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "core-foundation"
+version = "0.9.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "91e195e091a93c46f7102ec7818a2aa394e1e1771c3ab4825963fa03e45afb8f"
+dependencies = [
+ "core-foundation-sys",
+ "libc",
+]
+
+[[package]]
 name = "core-foundation-sys"
 version = "0.8.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -945,6 +955,22 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "877a4ace8713b0bcf2a4e7eec82529c029f1d0619886d18145fea96c3ffe5c0f"
 
 [[package]]
+name = "errno"
+version = "0.3.12"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cea14ef9355e3beab063703aa9dab15afd25f0667c341310c1e5274bb1d0da18"
+dependencies = [
+ "libc",
+ "windows-sys 0.52.0",
+]
+
+[[package]]
+name = "fastrand"
+version = "2.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "37909eebbb50d72f9059c3b6d82c0463f2ff062c9e95845c43a6c9c0355411be"
+
+[[package]]
 name = "flate2"
 version = "1.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -965,6 +991,21 @@ name = "foldhash"
 version = "0.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d9c4f5dac5e15c24eb999c26181a6ca40b39fe946cbe4c263c7209467bc83af2"
+
+[[package]]
+name = "foreign-types"
+version = "0.3.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f6f339eb8adc052cd2ca78910fda869aefa38d22d5cb648e6485e4d3fc06f3b1"
+dependencies = [
+ "foreign-types-shared",
+]
+
+[[package]]
+name = "foreign-types-shared"
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "00b0228411908ca8685dba7fc2cdd70ec9990a6e753e89b6ac91a84c40fbaf4b"
 
 [[package]]
 name = "form_urlencoded"
@@ -1159,15 +1200,14 @@ dependencies = [
 [[package]]
 name = "grammers-client"
 version = "0.7.0"
-source = "git+https://github.com/aav/grammers#fc1a2861f6dbb78374edf6bb0f7ab551514489bb"
 dependencies = [
  "chrono",
  "futures-util",
- "grammers-crypto",
- "grammers-mtproto",
- "grammers-mtsender",
+ "grammers-crypto 0.7.0",
+ "grammers-mtproto 0.7.0",
+ "grammers-mtsender 0.7.0",
  "grammers-session",
- "grammers-tl-types",
+ "grammers-tl-types 0.7.0",
  "locate-locale",
  "log",
  "md5",
@@ -1177,6 +1217,22 @@ dependencies = [
  "pulldown-cmark",
  "tokio",
  "web-time",
+]
+
+[[package]]
+name = "grammers-crypto"
+version = "0.7.0"
+dependencies = [
+ "aes",
+ "ctr",
+ "getrandom 0.2.16",
+ "glass_pumpkin",
+ "hmac",
+ "num-bigint",
+ "num-traits",
+ "pbkdf2",
+ "sha1",
+ "sha2",
 ]
 
 [[package]]
@@ -1199,18 +1255,52 @@ dependencies = [
 [[package]]
 name = "grammers-mtproto"
 version = "0.7.0"
+dependencies = [
+ "bytes",
+ "crc32fast",
+ "flate2",
+ "getrandom 0.2.16",
+ "grammers-crypto 0.7.0",
+ "grammers-tl-types 0.7.0",
+ "log",
+ "num-bigint",
+ "sha1",
+ "web-time",
+]
+
+[[package]]
+name = "grammers-mtproto"
+version = "0.7.0"
 source = "git+https://github.com/aav/grammers#fc1a2861f6dbb78374edf6bb0f7ab551514489bb"
 dependencies = [
  "bytes",
  "crc32fast",
  "flate2",
  "getrandom 0.2.16",
- "grammers-crypto",
- "grammers-tl-types",
+ "grammers-crypto 0.7.0 (git+https://github.com/aav/grammers)",
+ "grammers-tl-types 0.7.0 (git+https://github.com/aav/grammers)",
  "log",
  "num-bigint",
  "sha1",
  "web-time",
+]
+
+[[package]]
+name = "grammers-mtsender"
+version = "0.7.0"
+dependencies = [
+ "async_io_stream",
+ "bytes",
+ "futures-util",
+ "grammers-crypto 0.7.0",
+ "grammers-mtproto 0.7.0",
+ "grammers-tl-types 0.7.0",
+ "log",
+ "tokio",
+ "wasm-bindgen-futures",
+ "web-sys",
+ "web-time",
+ "ws_stream_wasm",
 ]
 
 [[package]]
@@ -1221,9 +1311,9 @@ dependencies = [
  "async_io_stream",
  "bytes",
  "futures-util",
- "grammers-crypto",
- "grammers-mtproto",
- "grammers-tl-types",
+ "grammers-crypto 0.7.0 (git+https://github.com/aav/grammers)",
+ "grammers-mtproto 0.7.0 (git+https://github.com/aav/grammers)",
+ "grammers-tl-types 0.7.0 (git+https://github.com/aav/grammers)",
  "log",
  "tokio",
  "wasm-bindgen-futures",
@@ -1235,12 +1325,11 @@ dependencies = [
 [[package]]
 name = "grammers-session"
 version = "0.7.0"
-source = "git+https://github.com/aav/grammers#fc1a2861f6dbb78374edf6bb0f7ab551514489bb"
 dependencies = [
- "grammers-crypto",
- "grammers-tl-gen",
- "grammers-tl-parser",
- "grammers-tl-types",
+ "grammers-crypto 0.7.0",
+ "grammers-tl-gen 0.7.0",
+ "grammers-tl-parser 1.1.2",
+ "grammers-tl-types 0.7.0",
  "log",
  "web-time",
 ]
@@ -1248,9 +1337,23 @@ dependencies = [
 [[package]]
 name = "grammers-tl-gen"
 version = "0.7.0"
+dependencies = [
+ "grammers-tl-parser 1.1.2",
+]
+
+[[package]]
+name = "grammers-tl-gen"
+version = "0.7.0"
 source = "git+https://github.com/aav/grammers#fc1a2861f6dbb78374edf6bb0f7ab551514489bb"
 dependencies = [
- "grammers-tl-parser",
+ "grammers-tl-parser 1.1.2 (git+https://github.com/aav/grammers)",
+]
+
+[[package]]
+name = "grammers-tl-parser"
+version = "1.1.2"
+dependencies = [
+ "crc32fast",
 ]
 
 [[package]]
@@ -1264,10 +1367,18 @@ dependencies = [
 [[package]]
 name = "grammers-tl-types"
 version = "0.7.0"
+dependencies = [
+ "grammers-tl-gen 0.7.0",
+ "grammers-tl-parser 1.1.2",
+]
+
+[[package]]
+name = "grammers-tl-types"
+version = "0.7.0"
 source = "git+https://github.com/aav/grammers#fc1a2861f6dbb78374edf6bb0f7ab551514489bb"
 dependencies = [
- "grammers-tl-gen",
- "grammers-tl-parser",
+ "grammers-tl-gen 0.7.0 (git+https://github.com/aav/grammers)",
+ "grammers-tl-parser 1.1.2 (git+https://github.com/aav/grammers)",
 ]
 
 [[package]]
@@ -1458,7 +1569,7 @@ dependencies = [
  "futures",
  "governor",
  "grammers-client",
- "grammers-mtsender",
+ "grammers-mtsender 0.7.0 (git+https://github.com/aav/grammers)",
  "hulyrs",
  "imageinfo",
  "ksuid",
@@ -1489,12 +1600,15 @@ dependencies = [
  "chrono",
  "config",
  "derive_builder",
+ "governor",
  "jsonwebtoken",
  "ksuid",
  "rdkafka",
  "reqwest",
  "reqwest-middleware",
+ "reqwest-ratelimit",
  "reqwest-retry",
+ "reqwest-retry-after",
  "secrecy",
  "serde",
  "serde_json",
@@ -1560,6 +1674,22 @@ dependencies = [
  "hyper-util",
  "pin-project-lite",
  "tokio",
+ "tower-service",
+]
+
+[[package]]
+name = "hyper-tls"
+version = "0.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "70206fc6890eaca9fde8a0bf71caa2ddfc9fe045ac9e5c70df101a7dbde866e0"
+dependencies = [
+ "bytes",
+ "http-body-util",
+ "hyper",
+ "hyper-util",
+ "native-tls",
+ "tokio",
+ "tokio-native-tls",
  "tower-service",
 ]
 
@@ -1894,6 +2024,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0717cef1bc8b636c6e1c1bbdefc09e6322da8a9321966e8928ef80d20f7f770f"
 
 [[package]]
+name = "linux-raw-sys"
+version = "0.9.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cd945864f07fe9f5371a27ad7b52a172b4b499999f1d97574c9fa68373937e12"
+
+[[package]]
 name = "litemap"
 version = "0.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2017,7 +2153,7 @@ dependencies = [
  "libc",
  "log",
  "wasi 0.11.0+wasi-snapshot-preview1",
- "windows-sys",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -2027,6 +2163,23 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1d87ecb2933e8aeadb3e3a02b828fed80a7528047e68b4f424523a0981a3a084"
 dependencies = [
  "serde",
+]
+
+[[package]]
+name = "native-tls"
+version = "0.2.14"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "87de3442987e9dbec73158d5c715e7ad9072fda936bb03d19d7fa10e00520f0e"
+dependencies = [
+ "libc",
+ "log",
+ "openssl",
+ "openssl-probe",
+ "openssl-sys",
+ "schannel",
+ "security-framework",
+ "security-framework-sys",
+ "tempfile",
 ]
 
 [[package]]
@@ -2133,6 +2286,38 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "44d11de466f4a3006fe8a5e7ec84e93b79c70cb992ae0aa0eb631ad2df8abfe2"
 
 [[package]]
+name = "openssl"
+version = "0.10.72"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fedfea7d58a1f73118430a55da6a286e7b044961736ce96a16a17068ea25e5da"
+dependencies = [
+ "bitflags 2.9.1",
+ "cfg-if",
+ "foreign-types",
+ "libc",
+ "once_cell",
+ "openssl-macros",
+ "openssl-sys",
+]
+
+[[package]]
+name = "openssl-macros"
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a948666b637a0f465e8564c73e89d4dde00d72d4d473cc972f390fc3dcee7d9c"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn",
+]
+
+[[package]]
+name = "openssl-probe"
+version = "0.1.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d05e27ee213611ffe7d6348b942e8f942b37114c00cc03cec254295a4a17852e"
+
+[[package]]
 name = "openssl-src"
 version = "300.5.0+3.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2171,7 +2356,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "41fc863e2ca13dc2d5c34fb22ea4a588248ac14db929616ba65c45f21744b1e9"
 dependencies = [
  "log",
- "windows-sys",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -2539,7 +2724,7 @@ dependencies = [
  "once_cell",
  "socket2",
  "tracing",
- "windows-sys",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -2793,19 +2978,23 @@ checksum = "d19c46a6fdd48bc4dab94b6103fccc55d34c67cc0ad04653aad4ea2a07cd7bbb"
 dependencies = [
  "base64 0.22.1",
  "bytes",
+ "encoding_rs",
  "futures-core",
  "futures-util",
+ "h2 0.4.10",
  "http 1.3.1",
  "http-body",
  "http-body-util",
  "hyper",
  "hyper-rustls",
+ "hyper-tls",
  "hyper-util",
  "ipnet",
  "js-sys",
  "log",
  "mime",
  "mime_guess",
+ "native-tls",
  "once_cell",
  "percent-encoding",
  "pin-project-lite",
@@ -2817,7 +3006,9 @@ dependencies = [
  "serde_json",
  "serde_urlencoded",
  "sync_wrapper",
+ "system-configuration",
  "tokio",
+ "tokio-native-tls",
  "tokio-rustls 0.26.2",
  "tokio-util",
  "tower 0.5.2",
@@ -2847,6 +3038,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "reqwest-ratelimit"
+version = "0.4.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2b8fff0d8036f23dcad6c27605ca3baa8ae3867438d0a8b34072f40f6c8bf628"
+dependencies = [
+ "async-trait",
+ "http 1.3.1",
+ "reqwest",
+ "reqwest-middleware",
+]
+
+[[package]]
 name = "reqwest-retry"
 version = "0.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2866,6 +3069,21 @@ dependencies = [
  "tokio",
  "tracing",
  "wasm-timer",
+]
+
+[[package]]
+name = "reqwest-retry-after"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e724e0b92c2cbde307744094b37e5e7bf44cec7f12a78b5d850d30e136ec2199"
+dependencies = [
+ "async-trait",
+ "http 1.3.1",
+ "reqwest",
+ "reqwest-middleware",
+ "task-local-extensions",
+ "time 0.3.41",
+ "tokio",
 ]
 
 [[package]]
@@ -2912,7 +3130,7 @@ dependencies = [
  "getrandom 0.2.16",
  "libc",
  "untrusted 0.9.0",
- "windows-sys",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -2957,6 +3175,19 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cfcb3a22ef46e85b45de6ee7e79d063319ebb6594faafcf1c225ea92ab6e9b92"
 dependencies = [
  "semver",
+]
+
+[[package]]
+name = "rustix"
+version = "1.0.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c71e83d6afe7ff64890ec6b71d6a69bb8a610ab78ce364b3352876bb4c801266"
+dependencies = [
+ "bitflags 2.9.1",
+ "errno",
+ "libc",
+ "linux-raw-sys",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -3028,6 +3259,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "28d3b2b1366ec20994f1fd18c3c594f05c5dd4bc44d8bb0c1c632c8d6829481f"
 
 [[package]]
+name = "schannel"
+version = "0.1.27"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1f29ebaa345f945cec9fbbc532eb307f0fdad8161f281b6369539c8d84876b3d"
+dependencies = [
+ "windows-sys 0.59.0",
+]
+
+[[package]]
 name = "scopeguard"
 version = "1.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3051,6 +3291,29 @@ checksum = "e891af845473308773346dc847b2c23ee78fe442e0472ac50e22a18a93d3ae5a"
 dependencies = [
  "serde",
  "zeroize",
+]
+
+[[package]]
+name = "security-framework"
+version = "2.11.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "897b2245f0b511c87893af39b033e5ca9cce68824c4d7e7630b5a1d339658d02"
+dependencies = [
+ "bitflags 2.9.1",
+ "core-foundation",
+ "core-foundation-sys",
+ "libc",
+ "security-framework-sys",
+]
+
+[[package]]
+name = "security-framework-sys"
+version = "2.14.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "49db231d56a190491cb4aeda9527f1ad45345af50b0851622a7adb8c03b01c32"
+dependencies = [
+ "core-foundation-sys",
+ "libc",
 ]
 
 [[package]]
@@ -3228,7 +3491,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4f5fd57c80058a56cf5c777ab8a126398ece8e442983605d280a44ce79d0edef"
 dependencies = [
  "libc",
- "windows-sys",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -3337,6 +3600,49 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn",
+]
+
+[[package]]
+name = "system-configuration"
+version = "0.6.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3c879d448e9d986b661742763247d3693ed13609438cf3d006f51f5368a5ba6b"
+dependencies = [
+ "bitflags 2.9.1",
+ "core-foundation",
+ "system-configuration-sys",
+]
+
+[[package]]
+name = "system-configuration-sys"
+version = "0.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8e1d1b10ced5ca923a1fcb8d03e96b8d3268065d724548c0211415ff6ac6bac4"
+dependencies = [
+ "core-foundation-sys",
+ "libc",
+]
+
+[[package]]
+name = "task-local-extensions"
+version = "0.1.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ba323866e5d033818e3240feeb9f7db2c4296674e4d9e16b97b7bf8f490434e8"
+dependencies = [
+ "pin-utils",
+]
+
+[[package]]
+name = "tempfile"
+version = "3.20.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e8a64e3985349f2441a1a9ef0b853f869006c3855f2cda6862a94d26ebb9d6a1"
+dependencies = [
+ "fastrand",
+ "getrandom 0.3.3",
+ "once_cell",
+ "rustix",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -3481,7 +3787,7 @@ dependencies = [
  "socket2",
  "tokio-macros",
  "tracing",
- "windows-sys",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -3493,6 +3799,16 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn",
+]
+
+[[package]]
+name = "tokio-native-tls"
+version = "0.3.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bbae76ab933c85776efabc971569dd6119c580d8f5d448769dec1764bf796ef2"
+dependencies = [
+ "native-tls",
+ "tokio",
 ]
 
 [[package]]
@@ -4117,6 +4433,15 @@ name = "windows-sys"
 version = "0.52.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "282be5f36a8ce781fad8c8ae18fa3f9beff57ec1b52cb3de0789201425d9a33d"
+dependencies = [
+ "windows-targets 0.52.6",
+]
+
+[[package]]
+name = "windows-sys"
+version = "0.59.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1e38bc4d79ed67fd075bcc251a1c39b32a1776bbe92e5bef1f0bf1f8c531853b"
 dependencies = [
  "windows-targets 0.52.6",
 ]

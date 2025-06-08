@@ -67,7 +67,7 @@ impl BlobClient {
             .bearer_auth(self.token.expose_secret())
             .multipart(form);
 
-        tokio::spawn(async move {
+        let task = async move {
             match request.send().await {
                 Ok(response) => {
                     if response.status().is_success() {
@@ -88,7 +88,11 @@ impl BlobClient {
                     let _ = ready_sender.send(Err(error));
                 }
             }
-        });
+        };
+
+        tokio::task::Builder::new()
+            .name(&format!("blob-{}", id))
+            .spawn(task)?;
 
         Ok((sender, ready_receiver))
     }
