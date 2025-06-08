@@ -158,20 +158,29 @@ impl SyncProcess {
     ) {
         let mut progress = exporter.progress();
         let mut seen = HashSet::new();
-        let mut persist_state = time::interval(Duration::from_secs(30));
+        let mut persist_state = time::interval(Duration::from_secs(10));
+        persist_state.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+
+        let mut last_persist = time::Instant::now();
 
         loop {
-            tokio::select! {
-                _ = persist_state.tick() => {
-                    if !crate::config::CONFIG.dry_run {
-                        if let Err(error) = state.persist().await {
-                            error!(%error, "Cannot persist state");
-                        }
+            if Instant::now() - last_persist > Duration::from_secs(30) {
+                last_persist = Instant::now();
 
-                        _ = exporter.set_progress(progress).await;
+                debug!(?progress, "Persisting state");
+
+                if !crate::config::CONFIG.dry_run {
+                    if let Err(error) = state.persist().await {
+                        error!(%error, "Cannot persist state");
+                    }
+
+                    if let Err(error) = exporter.set_progress(progress).await {
+                        error!(%error, "Cannot set progress");
                     }
                 }
+            }
 
+            tokio::select! {
                 event = receiver.recv() => {
                     match event {
                         Some(ImporterEvent::Message(message)) => {
@@ -209,7 +218,9 @@ impl SyncProcess {
                                     progress = SyncProgress::Progress(message.id());
                                     state.upsert(&entry);
                                 }
-                                Ok(None) => {}
+                                Ok(None) => {
+                                    progress = SyncProgress::Progress(message.id());
+                                }
 
                                 Err(e) => {
                                     error!(error = %e, "Message");
