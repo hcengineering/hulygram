@@ -122,22 +122,29 @@ impl SyncProcess {
         ))
     }
 
-    pub async fn sync_message(&self, message: &Message) -> Result<()> {
+    #[instrument(level = "debug", skip_all, fields(telegram_id = %self.me.id(), chat_id = %self.chat.id(), chat_name = %self.chat.card_title()))]
+    pub fn sync_message(&self, message: &Message) -> Result<()> {
         let chat_id = self.chat.id();
         let message_id = message.id();
 
-        self.sender
-            .send(ImporterEvent::Message(message.clone()))
-            .await?;
-
         trace!(chat = chat_id, message = message_id, "Sync message");
+
+        if let Err(error) = self
+            .sender
+            .try_send(ImporterEvent::Message(message.clone()))
+        {
+            warn!(%error, "Cannot send message");
+        }
 
         Ok(())
     }
 
-    pub async fn delete_messages(&self, messages: &[i32]) -> Result<()> {
+    #[instrument(level = "debug", skip_all, fields(telegram_id = %self.me.id(), chat_id = %self.chat.id(), chat_name = %self.chat.card_title()))]
+    pub fn delete_messages(&self, messages: &[i32]) -> Result<()> {
         for id in messages {
-            self.sender.send(ImporterEvent::Delete(*id)).await?;
+            if let Err(error) = self.sender.try_send(ImporterEvent::Delete(*id)) {
+                warn!(%error, "Cannot send delete message");
+            }
         }
 
         Ok(())
@@ -452,7 +459,7 @@ impl Sync {
 
                 if let Some(syncs) = self.syncs.get_vec_mut(&chat) {
                     for sync in syncs {
-                        sync.sync_message(&message).await?;
+                        sync.sync_message(&message)?;
                     }
                 }
             }
@@ -461,13 +468,13 @@ impl Sync {
                 if let Some(channel_id) = message.channel_id() {
                     if let Some(syncs) = self.syncs.get_vec_mut(&channel_id) {
                         for sync in syncs {
-                            sync.delete_messages(message.messages()).await?;
+                            sync.delete_messages(message.messages())?;
                         }
                     }
                 } else {
                     // have iterate over all syncs :(
                     for (_, sync) in self.syncs.flat_iter_mut() {
-                        sync.delete_messages(message.messages()).await?;
+                        sync.delete_messages(message.messages())?;
                     }
                 }
             }
