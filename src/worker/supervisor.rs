@@ -92,7 +92,7 @@ impl SupervisorInner {
                     trace!(%id, "Creating and running worker");
 
                     let delay = match Worker::new(config.clone()).await {
-                        Ok(mut worker) => {
+                        Ok(worker) => {
                             let reason = worker.run(&mut receiver).await;
 
                             match reason {

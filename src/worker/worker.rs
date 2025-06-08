@@ -168,14 +168,14 @@ impl Worker {
         }
     }
 
-    pub async fn run(&mut self, inbox: &mut mpsc::Receiver<Message>) -> ExitReason {
+    pub async fn run(mut self, inbox: &mut mpsc::Receiver<Message>) -> ExitReason {
         let result = self.run0(inbox).await;
-
-        self.sync.abort();
 
         if self.client.is_authorized().await.unwrap_or(false) {
             let _ = self.persist_session().await;
         }
+
+        self.sync.abort().await;
 
         result.unwrap_or_else(ExitReason::Error)
     }

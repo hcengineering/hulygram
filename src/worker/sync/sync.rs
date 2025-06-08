@@ -23,7 +23,7 @@ use multimap::MultiMap;
 use serde::{Deserialize, Serialize};
 use tokio::{
     self,
-    sync::mpsc,
+    sync::{Mutex, mpsc},
     task::{self, JoinHandle},
     time,
 };
@@ -61,7 +61,7 @@ pub struct DialogInfo {
 struct SyncProcess {
     chat: Chat,
     sender: mpsc::Sender<ImporterEvent>,
-    export: JoinHandle<()>,
+    // export: JoinHandle<()>,
     telegram: TelegramClient,
     global_services: GlobalServices,
     me: Arc<User>,
@@ -82,7 +82,7 @@ impl SyncProcess {
         ws: &WorkspaceIntegration,
         global_services: GlobalServices,
         telegram: TelegramClient,
-    ) -> Result<Self> {
+    ) -> Result<(Self, JoinHandle<()>)> {
         let chat_key = format!("chat_{}_{}_{}", me.id(), chat.id(), ws.workspace);
         let state_key = format!("sta_{}_{}_{}", me.id(), chat.id(), ws.workspace);
 
@@ -106,20 +106,18 @@ impl SyncProcess {
 
         let export = task::spawn(Self::export_task(state, exporter, chat.clone(), receiver));
 
-        Ok(SyncProcess {
-            chat: chat.clone(),
-            sender,
+        Ok((
+            SyncProcess {
+                chat: chat.clone(),
+                sender,
+                //        export,
+                telegram,
+                global_services,
+                me,
+                progress,
+            },
             export,
-            telegram,
-            global_services,
-            me,
-            progress,
-        })
-    }
-
-    #[instrument(level = "trace", skip_all, fields(chat = %self.chat.id()))]
-    pub fn abort(&self) {
-        self.export.abort();
+        ))
     }
 
     pub async fn sync_message(&self, message: &Message) -> Result<()> {
@@ -325,6 +323,7 @@ pub struct Sync {
     telegram: TelegramClient,
     config: Arc<WorkerConfig>,
     syncs: MultiMap<i64, Arc<SyncProcess>>,
+    cleanup: Arc<Mutex<Vec<JoinHandle<()>>>>,
 }
 
 impl Sync {
@@ -333,6 +332,7 @@ impl Sync {
             telegram,
             config,
             syncs: MultiMap::new(),
+            cleanup: Arc::default(),
         }
     }
 
@@ -371,8 +371,9 @@ impl Sync {
                     .await;
 
                     match sync {
-                        Ok(sync) => {
+                        Ok((sync, export)) => {
                             self.syncs.insert(chat_id, Arc::new(sync));
+                            self.cleanup.lock().await.push(export);
                         }
                         Err(error) => {
                             error!(%error, "Cannot spawn sync for chat {}", chat_id);
@@ -398,7 +399,9 @@ impl Sync {
             .sync_semaphore
             .clone();
 
-        tokio::task::spawn(async move {
+        let cleanup = self.cleanup.clone();
+
+        let handle = tokio::task::spawn(async move {
             static IDS: AtomicU32 = AtomicU32::new(0);
 
             for sync in syncs {
@@ -411,12 +414,16 @@ impl Sync {
                     "Sync permit acquired"
                 );
 
-                tokio::task::spawn(async move {
+                let handle = tokio::task::spawn(async move {
                     let _ = sync.synchronize(id).await;
                     drop(permit);
                 });
+
+                cleanup.lock().await.push(handle);
             }
         });
+
+        self.cleanup.lock().await.push(handle);
 
         Ok(())
     }
@@ -456,9 +463,9 @@ impl Sync {
         Ok(())
     }
 
-    pub fn abort(&mut self) {
-        for (_, sync) in self.syncs.flat_iter() {
-            sync.abort();
+    pub async fn abort(self) {
+        for handle in self.cleanup.lock().await.drain(..) {
+            handle.abort();
         }
     }
 }
