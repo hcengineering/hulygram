@@ -76,7 +76,7 @@ impl DownloadIterExt for DownloadIter {
         match time::timeout(Duration::from_secs(5), self.next()).await {
             Ok(x) => x.map_err(Into::into),
             Err(_) => {
-                anyhow::bail!("Timeout");
+                anyhow::bail!("Timeout, downloadning blob chunk");
             }
         }
     }

@@ -214,7 +214,7 @@ impl Worker {
 
                 match self.client.invoke(&register).await {
                     Ok(true) => {
-                        trace!(%phone, endpoint=%register.token, "Push endpoint registered");
+                        debug!(%phone, endpoint=%register.token, "Push endpoint registered");
                     }
                     Ok(false) => {
                         warn!(%phone, endpoint=%register.token, "Push endpoint registration failed");
