@@ -20,7 +20,7 @@ grammers-client = { git = "https://github.com/aav/grammers", features = [
 grammers-mtsender = { git = "https://github.com/aav/grammers" }
 serde_json = "1.0.140"
 strum = { version = "0.27.1", features = ["derive"] }
-hulyrs = { git = "https://github.com/hcengineering/hulyrs.git", branch = "service_factory", features = [
+hulyrs = { git = "https://github.com/hcengineering/hulyrs.git", branch = "limiter-and-retry", features = [
     "actix",
     "kafka",
 ] }

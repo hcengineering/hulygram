@@ -1594,6 +1594,7 @@ dependencies = [
 [[package]]
 name = "hulyrs"
 version = "0.1.0"
+source = "git+https://github.com/hcengineering/hulyrs.git?branch=limiter-and-retry#6043c090fb50df72fe4fe786c18c53d041ec6dba"
 dependencies = [
  "actix-web",
  "bytes",
