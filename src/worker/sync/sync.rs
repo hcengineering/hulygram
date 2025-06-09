@@ -59,8 +59,8 @@ pub struct DialogInfo {
 
 struct SyncProcess {
     chat: Chat,
-    sender: mpsc::Sender<ImporterEvent>,
-    // export: JoinHandle<()>,
+    sender_realtime: mpsc::Sender<Arc<ImporterEvent>>,
+    sender_backfill: mpsc::Sender<Arc<ImporterEvent>>,
     telegram: TelegramClient,
     global_services: GlobalServices,
     me: Arc<User>,
@@ -98,19 +98,27 @@ impl SyncProcess {
         )
         .await?;
 
-        let (sender, receiver) = mpsc::channel(1);
+        let (sender_backfill, receiver_backfill) = mpsc::channel(1);
+        let (sender_realtime, receiver_realtime) = mpsc::channel(16);
 
         let state = SyncState::load(chat.id(), state_key, global_services.clone()).await?;
         let progress = exporter.progress();
 
         let export = TaskBuilder::new()
             .name(&format!("exporter-{}", chat.id()))
-            .spawn(Self::export_task(state, exporter, chat.clone(), receiver))?;
+            .spawn(Self::export_task(
+                state,
+                exporter,
+                chat.clone(),
+                receiver_backfill,
+                receiver_realtime,
+            ))?;
 
         Ok((
             SyncProcess {
                 chat: chat.clone(),
-                sender,
+                sender_realtime,
+                sender_backfill,
                 telegram,
                 global_services,
                 me,
@@ -128,8 +136,8 @@ impl SyncProcess {
         trace!(chat = chat_id, message = message_id, "Sync message");
 
         if let Err(error) = self
-            .sender
-            .try_send(ImporterEvent::Message(message.clone()))
+            .sender_realtime
+            .try_send(Arc::new(ImporterEvent::Message(message.clone())))
         {
             warn!(%error, "Cannot send message");
         }
@@ -140,7 +148,10 @@ impl SyncProcess {
     #[instrument(level = "debug", skip_all, fields(telegram_id = %self.me.id(), chat_id = %self.chat.id(), chat_name = %self.chat.card_title()))]
     pub fn delete_messages(&self, messages: &[i32]) -> Result<()> {
         for id in messages {
-            if let Err(error) = self.sender.try_send(ImporterEvent::Delete(*id)) {
+            if let Err(error) = self
+                .sender_realtime
+                .try_send(Arc::new(ImporterEvent::Delete(*id)))
+            {
                 warn!(%error, "Cannot send delete message");
             }
         }
@@ -148,12 +159,13 @@ impl SyncProcess {
         Ok(())
     }
 
-    #[instrument(level = "debug", name="export", skip(state, exporter, chat, receiver), fields(chat_id = %chat.id(), chat_name = %chat.card_title()))]
+    #[instrument(level = "debug", name="export", skip_all, fields(chat_id = %chat.id(), chat_name = %chat.card_title()))]
     async fn export_task(
         mut state: SyncState,
         mut exporter: Exporter,
         chat: Chat,
-        mut receiver: mpsc::Receiver<ImporterEvent>,
+        mut receiver_backfill: mpsc::Receiver<Arc<ImporterEvent>>,
+        mut receiver_realtime: mpsc::Receiver<Arc<ImporterEvent>>,
     ) {
         let mut progress = exporter.progress();
         let mut seen = HashSet::new();
@@ -179,88 +191,97 @@ impl SyncProcess {
                 }
             }
 
-            tokio::select! {
-                event = receiver.recv() => {
-                    match event {
-                        Some(ImporterEvent::Message(message)) => {
-                            let span = span!(Level::TRACE, "message", telegram_id = message.id());
-                            let _enter = span.enter();
+            let event = tokio::select! {
+                biased;
 
-                            let date = message.edit_date().unwrap_or(message.date());
-                            let id = message.id();
+                event = receiver_realtime.recv() => {
+                    event
+                }
 
-                            seen.insert(message.id());
+                event = receiver_backfill.recv() => {
+                    event
+                }
 
-                            let state_entry = state.lookup(id).map(ToOwned::to_owned);
+                else => {
+                    None
+                }
+            };
 
-                            let result = match state_entry {
-                                None => {
-                                    // Unknown
-                                    trace!("New");
-                                    exporter.create(&message).await.map(Option::Some)
+            if let Some(event) = event {
+                match &*event {
+                    ImporterEvent::Message(message) => {
+                        let span = span!(Level::TRACE, "message", telegram_id = message.id());
+                        let _enter = span.enter();
 
-                                }
-                                // known
-                                Some(state_entry) if state_entry.date < date => {
-                                    // Known and updated
-                                    trace!("Updated");
-                                    exporter.update(&message, state_entry).await.map(Option::Some)
-                                }
+                        let date = message.edit_date().unwrap_or(message.date());
+                        let id = message.id();
 
-                                Some(_) => {
-                                    Ok(None)
-                                }
-                            };
+                        seen.insert(message.id());
 
-                            match result {
-                                Ok(Some(entry)) => {
-                                    state.upsert(&entry);
-                                }
-                                Ok(None) => {
-                                    //progress = SyncProgress::Progress(message.id());
-                                }
+                        let state_entry = state.lookup(id).map(ToOwned::to_owned);
 
-                                Err(e) => {
-                                    error!(error = %e, "Message");
-                                }
+                        let result = match state_entry {
+                            None => {
+                                // Unknown
+                                trace!("New");
+                                exporter.create(&message).await.map(Option::Some)
+                            }
+                            // known
+                            Some(state_entry) if state_entry.date < date => {
+                                // Known and updated
+                                trace!("Updated");
+                                exporter
+                                    .update(&message, state_entry)
+                                    .await
+                                    .map(Option::Some)
                             }
 
-                            progress = SyncProgress::Progress(message.id());
-                        }
+                            Some(_) => Ok(None),
+                        };
 
-                        Some(ImporterEvent::Delete(message)) => {
-                            if state.lookup(message).is_some() {
-                                if let Err(error) = exporter.delete(message).await {
-                                    error!(%error);
-                                }
-
-                                state.delete(message);
+                        match result {
+                            Ok(Some(entry)) => {
+                                state.upsert(&entry);
                             }
-                        }
-
-                        Some(ImporterEvent::BatchEnd(_progress)) => {
-                            debug!("Batch end");
-
-                            progress = SyncProgress::Complete;
-
-                            let min = seen.iter().fold(i32::MAX, |acc, id| acc.min(*id));
-
-                            for id in state.ids() {
-                                if id >= min && !seen.contains(&id) {
-                                    let _ = exporter.delete(id).await;
-                                    state.delete(id);
-                                }
+                            Ok(None) => {
+                                //progress = SyncProgress::Progress(message.id());
                             }
 
-                            if !crate::config::CONFIG.dry_run {
-                                let _ = state.persist().await;
-                                _ = exporter.set_progress(progress).await;
+                            Err(e) => {
+                                error!(error = %e, "Message");
                             }
                         }
 
-                        None => {
-                            // ok for now, but should be fixed
-                            //panic!("Receiver closed unexpectedly");
+                        progress = SyncProgress::Progress(message.id());
+                    }
+
+                    ImporterEvent::Delete(message) => {
+                        if state.lookup(*message).is_some() {
+                            if let Err(error) = exporter.delete(*message).await {
+                                error!(%error);
+                            }
+
+                            state.delete(*message);
+                        }
+                    }
+
+                    ImporterEvent::BatchEnd(_progress) => {
+                        debug!("Batch end");
+
+                        progress = SyncProgress::Complete;
+
+                        let min = seen.iter().fold(i32::MAX, |acc, id| acc.min(*id));
+
+                        for id in state.ids() {
+                            if id >= min && !seen.contains(&id) {
+                                let _ = exporter.delete(id).await;
+                                state.delete(id);
+                            }
+                        }
+
+                        if !crate::config::CONFIG.dry_run {
+                            let _ = state.persist().await;
+                            _ = exporter.set_progress(progress).await;
                         }
                     }
                 }
@@ -269,8 +290,12 @@ impl SyncProcess {
     }
 
     #[instrument(level = "debug", skip_all, fields(id = _id,  telegram_id = %self.me.id(), chat_id = %self.chat.id(), chat_name = %self.chat.card_title()))]
-    async fn synchronize(&self, _id: u32) {
-        debug!(progress = ?self.progress, "Synchronisation begin");
+    async fn backfill(&self, _id: u32) {
+        if matches!(self.progress, SyncProgress::Complete) {
+            return;
+        }
+
+        debug!(progress = ?self.progress, "Backfill begin");
 
         let mut messages = self.telegram.iter_messages(self.chat.pack());
         if let SyncProgress::Progress(offset) = self.progress {
@@ -294,7 +319,10 @@ impl SyncProcess {
             if self.progress == SyncProgress::Complete {
                 if count >= 100 {
                     debug!("Limit reached");
-                    let _ = self.sender.send(ImporterEvent::BatchEnd(true)).await;
+                    let _ = self
+                        .sender_backfill
+                        .send(Arc::new(ImporterEvent::BatchEnd(true)))
+                        .await;
                     break;
                 }
             }
@@ -309,16 +337,19 @@ impl SyncProcess {
 
             match next.await {
                 Ok(Ok(Some(message))) => {
-                    let _ = self.sender.send(ImporterEvent::Message(message)).await;
+                    let _ = self
+                        .sender_backfill
+                        .send(Arc::new(ImporterEvent::Message(message)))
+                        .await;
                 }
                 Ok(Ok(_)) => {
                     debug!("No more messages");
                     let _ = self
-                        .sender
-                        .send(ImporterEvent::BatchEnd(matches!(
+                        .sender_backfill
+                        .send(Arc::new(ImporterEvent::BatchEnd(matches!(
                             self.progress,
                             SyncProgress::Complete
-                        )))
+                        ))))
                         .await;
                     break;
                 }
@@ -334,7 +365,7 @@ impl SyncProcess {
             }
         }
 
-        debug!(count, "Synchronization end");
+        debug!(count, "Backfill end");
     }
 }
 
@@ -430,13 +461,13 @@ impl Sync {
                 trace!(
                     id,
                     permits = semaphore.available_permits(),
-                    "Sync permit acquired"
+                    "Backfill permit acquired"
                 );
 
                 let sync = TaskBuilder::new()
-                    .name(&format!("sync-{}", id))
+                    .name(&format!("backfill-{}", id))
                     .spawn(async move {
-                        let _ = sync.synchronize(id).await;
+                        let _ = sync.backfill(id).await;
                         drop(permit);
                     });
 
