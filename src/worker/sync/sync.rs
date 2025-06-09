@@ -215,17 +215,18 @@ impl SyncProcess {
 
                             match result {
                                 Ok(Some(entry)) => {
-                                    progress = SyncProgress::Progress(message.id());
                                     state.upsert(&entry);
                                 }
                                 Ok(None) => {
-                                    progress = SyncProgress::Progress(message.id());
+                                    //progress = SyncProgress::Progress(message.id());
                                 }
 
                                 Err(e) => {
                                     error!(error = %e, "Message");
                                 }
                             }
+
+                            progress = SyncProgress::Progress(message.id());
                         }
 
                         Some(ImporterEvent::Delete(message)) => {
