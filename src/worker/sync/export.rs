@@ -73,7 +73,7 @@ trait DownloadIterExt {
 
 impl DownloadIterExt for DownloadIter {
     async fn next_timeout(&mut self) -> Result<Option<Vec<u8>>> {
-        match time::timeout(Duration::from_secs(5), self.next()).await {
+        match time::timeout(Duration::from_secs(30), self.next()).await {
             Ok(x) => x.map_err(Into::into),
             Err(_) => {
                 anyhow::bail!("Timeout, downloadning blob chunk");
