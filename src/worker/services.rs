@@ -27,6 +27,7 @@ impl WorkspaceServices {
             &ClaimsBuilder::default()
                 .system_account()
                 .workspace(workspace)
+                .extra("service", &CONFIG.service_id)
                 .build()?,
         )?;
 
