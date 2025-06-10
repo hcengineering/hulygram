@@ -1,10 +1,12 @@
 use anyhow::Result;
 use hulyrs::services::{jwt::ClaimsBuilder, types::WorkspaceUuid};
+use phonenumber::country::Id::CL;
 use reqwest::{
     Body, Client,
     multipart::{Form, Part},
 };
 use secrecy::{ExposeSecret, SecretString};
+use std::sync::LazyLock;
 use tokio::sync::{mpsc, oneshot};
 use tokio_stream::wrappers::ReceiverStream;
 use tracing::*;
@@ -22,6 +24,8 @@ pub struct BlobClient {
 
 pub type Sender = mpsc::Sender<std::io::Result<Vec<u8>>>;
 
+static CLIENT: LazyLock<Client> = LazyLock::new(|| Client::new());
+
 impl BlobClient {
     pub fn new(workspace: WorkspaceUuid) -> hulyrs::Result<Self> {
         let base = CONFIG
@@ -29,7 +33,7 @@ impl BlobClient {
             .join("/upload/form-data/")?
             .join(workspace.to_string().as_str())?;
 
-        let http = Client::new();
+        let http = CLIENT.clone();
         let token = ClaimsBuilder::default()
             .system_account()
             .workspace(workspace)
