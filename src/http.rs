@@ -11,7 +11,7 @@ use actix_web::{
 use hulyrs::services::jwt::{Claims, actix::ServiceRequestExt};
 use serde::{Deserialize, Serialize};
 use tokio::task::JoinHandle;
-use tracing::{debug, info, trace};
+use tracing::*;
 
 use crate::{
     config::CONFIG,
@@ -96,6 +96,7 @@ pub fn spawn(
                     )
                 }),
             )
+            .route("/heap", web::get().to(heap))
     })
     .disable_signals()
     .bind(socket)?
@@ -105,6 +106,26 @@ pub fn spawn(
     let server = tokio::spawn(server);
 
     Ok((server, server_handle))
+}
+
+async fn heap(_request: HttpRequest) -> HandlerResult<HttpResponse> {
+    #[cfg(not(debug_assertions))]
+    return Ok(HttpResponse::NotFound().finish());
+
+    let mut pprof = jemalloc_pprof::PROF_CTL.as_ref().unwrap().lock().await;
+    if !pprof.activated() {
+        return Ok(HttpResponse::Forbidden().body("heap profiling not activated"));
+    }
+
+    let response = pprof
+        .dump_pprof()
+        .map(|data| HttpResponse::Ok().body(data))
+        .unwrap_or_else(|error| {
+            error!(%error, "Failed to dump heap profile");
+            HttpResponse::InternalServerError().finish()
+        });
+
+    Ok(response)
 }
 
 async fn push(
