@@ -11,10 +11,10 @@ use tokio::{
 use tracing::*;
 
 use crate::{
+    context::GlobalContext,
     integration::TelegramIntegration,
     worker::{
         WorkerHintsBuilder,
-        services::GlobalServices,
         worker::{ExitReason, Message, Worker, WorkerConfig, WorkerHints},
     },
 };
@@ -24,25 +24,21 @@ pub type WorkerId = String;
 #[derive(Clone)]
 pub struct SupervisorInner {
     workers: Arc<Mutex<HashMap<WorkerId, (Sender<Message>, broadcast::Receiver<String>)>>>,
-    global_services: GlobalServices,
+    global: Arc<GlobalContext>,
 }
 
 pub type Supervisor = Arc<SupervisorInner>;
 
-pub fn new(global_services: GlobalServices) -> anyhow::Result<Supervisor> {
+pub fn new(global: Arc<GlobalContext>) -> anyhow::Result<Supervisor> {
     Ok(Arc::new(SupervisorInner {
         workers: Arc::new(Mutex::new(HashMap::new())),
-        global_services,
+        global,
     }))
 }
 
 impl SupervisorInner {
     pub async fn spawn_all(self: &Arc<Self>) -> anyhow::Result<()> {
-        let integrations = self
-            .global_services
-            .account()
-            .list_all_integrations()
-            .await?;
+        let integrations = self.global.account().list_all_integrations().await?;
 
         for integration in integrations {
             trace!(%integration.phone, "Automatically spawning worker");
@@ -79,12 +75,12 @@ impl SupervisorInner {
 
                 // leak sender, so recever will never close
                 _self_sender: sender.clone(),
-                global_services: self.global_services.clone(),
                 hints: hints.clone(),
             };
 
             trace!(%id, "Spawn worker");
             let task_name = format!("worker-{}", id);
+            let global = self.global.clone();
 
             let task = async move {
                 'outer: loop {
@@ -92,7 +88,7 @@ impl SupervisorInner {
 
                     trace!(%id, "Creating and running worker");
 
-                    let delay = match Worker::new(config.clone()).await {
+                    let delay = match Worker::new(global.clone(), config.clone()).await {
                         Ok(worker) => {
                             let reason = worker.run(&mut receiver).await;
 

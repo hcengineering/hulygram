@@ -1,5 +1,0 @@
-/target
-/data
-Justfile
-.env.docker
-*.pb.gz

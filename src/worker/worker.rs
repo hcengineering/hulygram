@@ -17,10 +17,11 @@ use tokio::{
 };
 use tracing::*;
 
-use super::services::GlobalServices;
+use super::context::WorkerContext;
 use super::supervisor::WorkerId;
 use super::sync::Sync;
 use crate::config::CONFIG;
+use crate::context::GlobalContext;
 
 #[derive(Debug)]
 pub enum Message {
@@ -83,7 +84,6 @@ pub struct WorkerHints {
 pub struct WorkerConfig {
     pub id: WorkerId,
     pub phone: String,
-    pub global_services: GlobalServices,
     pub hints: WorkerHints,
 
     pub _self_sender: mpsc::Sender<Message>,
@@ -102,6 +102,7 @@ pub struct Worker {
     pub client: Client,
     session_key: String,
     sync: Sync,
+    context: Arc<WorkerContext>,
 }
 
 pub enum ExitReason {
@@ -112,7 +113,7 @@ pub enum ExitReason {
 }
 
 impl Worker {
-    pub async fn new(config: WorkerConfig) -> Result<Self> {
+    pub async fn new(context: Arc<GlobalContext>, config: WorkerConfig) -> Result<Self> {
         let config = Arc::new(config);
 
         let phone = &config.phone;
@@ -120,7 +121,7 @@ impl Worker {
 
         let session_key = format!("ses_{}", phone);
 
-        let session = if let Some(session) = config.global_services.kvs().get(&session_key).await? {
+        let session = if let Some(session) = context.kvs().get(&session_key).await? {
             trace!(%phone, "Persisted session found");
             Session::load(session.as_slice())?
         } else {
@@ -138,7 +139,9 @@ impl Worker {
 
         trace!(%phone, %config.id, "Connected");
 
-        let sync = Sync::new(client.clone(), config.clone());
+        let context = Arc::new(WorkerContext::new(context, client.clone()).await?);
+
+        let sync = Sync::new(context.clone());
 
         Ok(Self {
             id: config.id.clone(),
@@ -146,13 +149,14 @@ impl Worker {
             client,
             session_key,
             sync,
+            context,
         })
     }
 
     async fn persist_session(&self) -> Result<()> {
         Ok(self
-            .config
-            .global_services
+            .context
+            .global
             .kvs()
             .upsert(&self.session_key, &self.client.session().save())
             .await?)

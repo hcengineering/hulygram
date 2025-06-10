@@ -1,4 +1,7 @@
-use std::collections::{HashMap, HashSet};
+use std::{
+    collections::{HashMap, HashSet},
+    sync::Arc,
+};
 
 use anyhow::Result;
 use chrono::{DateTime, Utc};
@@ -8,7 +11,7 @@ use tracing::*;
 use uuid::Uuid;
 
 use super::super::sync::SyncProgress;
-use crate::worker::services::GlobalServices;
+use crate::context::GlobalContext;
 
 #[derive(Serialize, Deserialize, Clone)]
 pub enum GroupRole {
@@ -85,7 +88,7 @@ pub struct SyncState {
     added: Index,
     deleted: HashSet<i32>,
 
-    services: GlobalServices,
+    context: Arc<GlobalContext>,
 
     is_dirty: bool,
 }
@@ -95,9 +98,9 @@ impl SyncState {
         format!("{}_{}", path, segment)
     }
 
-    #[instrument(level = "trace", skip(services), fields(channel = %channel, path = %path))]
-    pub async fn load(channel: i64, path: String, services: GlobalServices) -> Result<Self> {
-        let kvs = services.kvs();
+    #[instrument(level = "trace", skip(context), fields(channel = %channel, path = %path))]
+    pub async fn load(channel: i64, path: String, context: Arc<GlobalContext>) -> Result<Self> {
+        let kvs = context.kvs();
         let mut segment = None;
         let mut segments = Vec::new();
 
@@ -117,7 +120,7 @@ impl SyncState {
             path,
             added: Index::default(),
             deleted: HashSet::new(),
-            services,
+            context,
             is_dirty: false,
         };
 
@@ -193,7 +196,7 @@ impl SyncState {
             };
 
             let bytes = segment.store()?;
-            let kvs = self.services.kvs();
+            let kvs = self.context.kvs();
 
             let segment = self.segment.unwrap_or(0);
             self.segment = Some(segment);
@@ -218,7 +221,7 @@ impl SyncState {
         Ok(())
     }
 
-    async fn set_progress(&mut self, progress: SyncProgress) -> Result<()> {
+    async fn set_progress(&mut self, _progress: SyncProgress) -> Result<()> {
         //
         unimplemented!()
     }

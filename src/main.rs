@@ -1,5 +1,4 @@
-#[allow(unused_imports)]
-use std::time::Duration;
+use std::sync::Arc;
 
 #[allow(unused_imports)]
 use console_subscriber::ConsoleLayer;
@@ -8,9 +7,9 @@ use tokio::{
     select,
     signal::unix::{SignalKind, signal},
 };
-use worker::GlobalServices;
 
 mod config;
+mod context;
 mod etc;
 mod http;
 mod integration;
@@ -76,12 +75,12 @@ async fn main() -> anyhow::Result<()> {
         .service(&CONFIG.service_id)
         .build()?;
 
-    let global_services = GlobalServices::new(system_account)?;
+    let context = Arc::new(context::GlobalContext::new(system_account)?);
 
-    let supervisor = worker::new_supervisor(global_services.clone())?;
+    let supervisor = worker::new_supervisor(context.clone())?;
     supervisor.spawn_all().await?;
 
-    let (http, abort_http) = http::spawn(supervisor.clone(), global_services)?;
+    let (http, abort_http) = http::spawn(supervisor.clone(), context)?;
 
     let mut term = signal(SignalKind::terminate())?;
 

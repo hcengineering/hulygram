@@ -1,7 +1,7 @@
 mod blob;
+mod context;
 mod export;
-mod state;
+pub mod state;
 mod sync;
 mod tx;
-
 pub use sync::Sync;

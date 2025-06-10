@@ -1,4 +1,4 @@
-use std::{mem::discriminant, time::Duration};
+use std::{mem::discriminant, sync::Arc, time::Duration};
 
 use actix_cors::Cors;
 use actix_web::{
@@ -15,8 +15,9 @@ use tracing::*;
 
 use crate::{
     config::CONFIG,
+    context::GlobalContext,
     integration::{AccountIntegrationData, TelegramIntegration},
-    worker::{GlobalServices, Supervisor, WorkerAccess, WorkerHintsBuilder, WorkerStateResponse},
+    worker::{Supervisor, WorkerAccess, WorkerHintsBuilder, WorkerStateResponse},
 };
 
 #[derive(thiserror::Error, Debug)]
@@ -55,7 +56,7 @@ async fn interceptor(
 
 pub fn spawn(
     supervisor: Supervisor,
-    services: GlobalServices,
+    services: Arc<GlobalContext>,
 ) -> anyhow::Result<(JoinHandle<Result<(), std::io::Error>>, ServerHandle)> {
     let socket = std::net::SocketAddr::new(CONFIG.bind_host.as_str().parse()?, CONFIG.bind_port);
 
@@ -183,7 +184,7 @@ enum Command {
 
 async fn enumerate(
     request: HttpRequest,
-    services: Data<GlobalServices>,
+    services: Data<GlobalContext>,
     supervisor: Data<Supervisor>,
 ) -> HandlerResult<Json<Vec<Integration>>> {
     trace!("Enumerate request");
@@ -224,7 +225,7 @@ async fn enumerate(
 async fn get(
     request: HttpRequest,
     phone: Path<String>,
-    services: Data<GlobalServices>,
+    services: Data<GlobalContext>,
     supervisor: Data<Supervisor>,
 ) -> HandlerResult<HttpResponse> {
     let phone = normalize_phone_number(&phone)?;
@@ -264,7 +265,7 @@ async fn get(
 async fn command(
     request: HttpRequest,
     phone: Path<String>,
-    services: Data<GlobalServices>,
+    services: Data<GlobalContext>,
     supervisor: Data<Supervisor>,
     command: Json<Command>,
 ) -> HandlerResult<HttpResponse> {

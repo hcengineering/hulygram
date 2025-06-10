@@ -4,7 +4,7 @@ use anyhow::{Result, anyhow, bail};
 use grammers_client::{
     Client as TelegramClient,
     client::files::DownloadIter,
-    types::{Chat, Downloadable, Media, Message, User},
+    types::{Downloadable, Media, Message},
 };
 use hulyrs::services::{
     transactor::{
@@ -23,18 +23,15 @@ use uuid::Uuid;
 
 use super::{
     blob::{BlobClient, Sender as BlobSender},
+    context::SyncContext,
     state::state::{Entry as StateEntry, EntryBuilder as StateEntryBuilder, GroupRole},
     sync::{DialogInfo, SyncProgress},
     tx::TransactorExt,
 };
 use crate::{
     CONFIG,
-    integration::WorkspaceIntegration,
-    worker::{
-        chat::ChatExt,
-        limiters::TelegramLimiter,
-        services::{GlobalServices, WorkspaceServices},
-    },
+    context::GlobalContext,
+    worker::{chat::ChatExt, limiters::TelegramLimiter},
 };
 
 type MessageId = i64;
@@ -83,12 +80,12 @@ impl DownloadIterExt for DownloadIter {
 
 trait TelegramExt {
     async fn download_all<D: Downloadable>(
-        &mut self,
+        &self,
         d: &D,
         limiter: &TelegramLimiter,
     ) -> Result<Vec<u8>>;
     async fn download_in_chunks<D: Downloadable>(
-        &mut self,
+        &self,
         d: &D,
         sender: BlobSender,
         limiter: &TelegramLimiter,
@@ -97,7 +94,7 @@ trait TelegramExt {
 
 impl TelegramExt for TelegramClient {
     async fn download_all<D: Downloadable>(
-        &mut self,
+        &self,
         d: &D,
         limiter: &TelegramLimiter,
     ) -> Result<Vec<u8>> {
@@ -116,7 +113,7 @@ impl TelegramExt for TelegramClient {
 
     #[instrument(level = "trace", skip_all)]
     async fn download_in_chunks<D: Downloadable>(
-        &mut self,
+        &self,
         d: &D,
         sender: BlobSender,
         limiter: &TelegramLimiter,
@@ -163,28 +160,18 @@ impl TelegramExt for TelegramClient {
 pub(super) struct Exporter {
     info_key: String,
     pub info: Option<DialogInfo>,
-    chat: Chat,
-    me: Arc<User>,
-    ws: WorkspaceIntegration,
-    telegram: TelegramClient,
-    global_services: GlobalServices,
-    workspace_services: WorkspaceServices,
+    global_context: Arc<GlobalContext>,
+    context: Arc<SyncContext>,
     groups: HashMap<i64, MessageId>,
     social_ids: HashMap<String, PersonId>,
 }
 
 impl Exporter {
-    #[instrument(level = "trace", skip_all, fields(chat = %chat.id(), user = %me.id(), account = %ws.account, workspace = %ws.workspace))]
-    pub(super) async fn new(
-        info_key: String,
-        me: &Arc<User>,
-        chat: &Chat,
-        ws: &WorkspaceIntegration,
-        telegram: TelegramClient,
-        global_services: GlobalServices,
-        workspace_services: WorkspaceServices,
-    ) -> Result<Self> {
-        let info = global_services.kvs().get(&info_key).await?;
+    #[instrument(level = "trace", skip_all, fields(chat = %context.chat.id(), user = %context.worker.me.id(), account = %context.worker.account_id, workspace = %context.workspace_id))]
+    pub(super) async fn new(info_key: String, context: Arc<SyncContext>) -> Result<Self> {
+        let global_context = context.worker.global.clone();
+
+        let info = global_context.kvs().get(&info_key).await?;
         let info = if let Some(info) = &info {
             let info = serde_json::from_slice::<DialogInfo>(info)?;
 
@@ -209,12 +196,8 @@ impl Exporter {
         let exporter = Self {
             info_key,
             info,
-            telegram,
-            chat: chat.clone(),
-            me: me.clone(),
-            ws: ws.clone(),
-            global_services,
-            workspace_services,
+            global_context,
+            context,
             groups: HashMap::new(),
             social_ids: HashMap::new(),
         };
@@ -223,19 +206,22 @@ impl Exporter {
     }
 
     async fn ensure_channel(&mut self) -> Result<&mut DialogInfo> {
-        let tx = self.workspace_services.transactor();
+        let tx = self.context.transactor();
 
         if self.info.is_none() {
-            let card_title = self.chat.card_title();
+            let card_title = self.context.chat.card_title();
             let is_private = !CONFIG
                 .allowed_dialog_ids
-                .contains(&self.chat.id().to_string());
+                .contains(&self.context.chat.id().to_string());
 
             let (space, channel) = if is_private {
-                let person_id = tx.find_person(self.ws.account).await?.ok_or_else(|| {
-                    warn!("Person not found");
-                    anyhow!("NoPerson")
-                })?;
+                let person_id = tx
+                    .find_person(self.context.worker.account_id)
+                    .await?
+                    .ok_or_else(|| {
+                        warn!("Person not found");
+                        anyhow!("NoPerson")
+                    })?;
 
                 let space_id = tx.find_personal_space(&person_id).await?.ok_or_else(|| {
                     warn!(%person_id, "Personal space not found");
@@ -243,7 +229,7 @@ impl Exporter {
                 })?;
 
                 let channel = tx
-                    .create_channel(&self.ws.social_id, &space_id, &card_title)
+                    .create_channel(&self.context.worker.social_id, &space_id, &card_title)
                     .await?;
 
                 (space_id, channel)
@@ -251,20 +237,20 @@ impl Exporter {
                 let space = "card:space:Default".to_owned();
 
                 let channel = tx
-                    .create_channel(&self.ws.social_id, &space, &card_title)
+                    .create_channel(&self.context.worker.social_id, &space, &card_title)
                     .await?;
 
                 (space, channel)
             };
 
             let info = DialogInfo {
-                telegram_user: self.me.id(),
-                telegram_type: self.chat.r#type(),
-                telegram_chat_id: self.chat.id(),
+                telegram_user: self.context.worker.me.id(),
+                telegram_type: self.context.chat.r#type(),
+                telegram_chat_id: self.context.chat.id(),
 
-                huly_workspace: self.ws.workspace,
-                huly_account: self.ws.account,
-                huly_social_id: self.ws.social_id.clone(),
+                huly_workspace: self.context.workspace_id,
+                huly_account: self.context.worker.account_id,
+                huly_social_id: self.context.worker.social_id.clone(),
                 huly_channel: channel.clone(),
                 huly_space: space,
                 huly_title: card_title,
@@ -273,7 +259,7 @@ impl Exporter {
             };
 
             if !crate::config::CONFIG.dry_run {
-                self.global_services
+                self.global_context
                     .kvs()
                     .upsert(&self.info_key, &serde_json::to_vec(&info)?)
                     .await?;
@@ -301,7 +287,7 @@ impl Exporter {
             let info = info.clone();
 
             if !crate::config::CONFIG.dry_run {
-                self.global_services
+                self.global_context
                     .kvs()
                     .upsert(&self.info_key, &serde_json::to_vec(&info)?)
                     .await?;
@@ -317,11 +303,7 @@ impl Exporter {
             return Ok(person_id.clone());
         } else {
             trace!("Cache miss");
-            let ensured = self
-                .workspace_services
-                .transactor()
-                .ensure_person(&request)
-                .await?;
+            let ensured = self.context.transactor().ensure_person(&request).await?;
 
             self.social_ids
                 .insert(request.social_value, ensured.social_id.clone());
@@ -364,7 +346,7 @@ impl Exporter {
                 .unwrap();
 
             if !dry_run {
-                self.global_services
+                self.global_context
                     .hulygun()
                     .request(
                         info.huly_workspace,
@@ -396,7 +378,7 @@ impl Exporter {
                         .unwrap();
 
                     if !dry_run {
-                        self.global_services
+                        self.global_context
                             .hulygun()
                             .request(
                                 info.huly_workspace,
@@ -435,8 +417,10 @@ impl Exporter {
         match message.media() {
             Some(Media::Photo(photo)) => {
                 let blob = self
+                    .context
+                    .worker
                     .telegram
-                    .download_all(&photo, &self.global_services.limiters().get_file)
+                    .download_all(&photo, &self.global_context.limiters().get_file)
                     .await?;
 
                 let huly_blob_id = message.huly_blob_id();
@@ -483,7 +467,7 @@ impl Exporter {
                         .build()?;
 
                     if !dry_run {
-                        self.global_services
+                        self.global_context
                             .hulygun()
                             .request(
                                 info.huly_workspace,
@@ -508,12 +492,10 @@ impl Exporter {
 
                 let (sender, ready) = blobs.upload(huly_blob_id, length as usize, mime_type)?;
                 let download_result = self
+                    .context
+                    .worker
                     .telegram
-                    .download_in_chunks(
-                        &document,
-                        sender,
-                        &self.global_services.limiters().get_file,
-                    )
+                    .download_in_chunks(&document, sender, &self.global_context.limiters().get_file)
                     .await;
 
                 let _ = ready.await?;
@@ -535,7 +517,7 @@ impl Exporter {
                         .build()?;
 
                     if !dry_run {
-                        self.global_services
+                        self.global_context
                             .hulygun()
                             .request(
                                 info.huly_workspace,
@@ -596,7 +578,7 @@ impl Exporter {
                     .unwrap();
 
                 if !dry_run {
-                    self.global_services
+                    self.global_context
                         .hulygun()
                         .request(
                             info.huly_workspace,

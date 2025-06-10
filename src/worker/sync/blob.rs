@@ -1,6 +1,5 @@
 use anyhow::Result;
 use hulyrs::services::{jwt::ClaimsBuilder, types::WorkspaceUuid};
-use phonenumber::country::Id::CL;
 use reqwest::{
     Body, Client,
     multipart::{Form, Part},

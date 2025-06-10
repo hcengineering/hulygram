@@ -3,21 +3,9 @@ use std::{
     sync::{Arc, atomic::AtomicU32},
 };
 
-use crate::{
-    integration::{TelegramIntegration, WorkspaceIntegration},
-    worker::{
-        WorkerConfig,
-        chat::{ChatExt, DialogType},
-        services::{GlobalServices, WorkspaceServices},
-    },
-};
 use anyhow::Result;
 use chrono::TimeDelta;
-use ciborium::de;
-use grammers_client::{
-    Client as TelegramClient,
-    types::{Chat, Message, User},
-};
+use grammers_client::types::Message;
 use hulyrs::services::types::{AccountUuid, SocialIdId, WorkspaceUuid};
 use multimap::MultiMap;
 use serde::{Deserialize, Serialize};
@@ -28,9 +16,14 @@ use tokio::{
     time::{self, Duration, Instant},
 };
 use tracing::*;
-use tracing_subscriber::field::debug;
 
-use super::{export::Exporter, state::SyncState};
+use super::{
+    super::context::WorkerContext, context::SyncContext, export::Exporter, state::state::SyncState,
+};
+use crate::{
+    integration::TelegramIntegration,
+    worker::chat::{ChatExt, DialogType},
+};
 
 #[derive(
     Debug, Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Default, derive_more::IsVariant,
@@ -62,13 +55,10 @@ pub struct DialogInfo {
 }
 
 struct SyncProcess {
-    chat: Chat,
     sender_realtime: mpsc::Sender<Arc<ImporterEvent>>,
     sender_backfill: mpsc::Sender<Arc<ImporterEvent>>,
-    telegram: TelegramClient,
-    global_services: GlobalServices,
-    me: Arc<User>,
     progress: SyncProgress,
+    context: Arc<SyncContext>,
 }
 
 enum ImporterEvent {
@@ -79,66 +69,57 @@ enum ImporterEvent {
 
 impl SyncProcess {
     #[instrument(level = "trace", skip_all)]
-    async fn maybe_spawn(
-        me: Arc<User>,
-        chat: &Chat,
-        ws: &WorkspaceIntegration,
-        global_services: GlobalServices,
-        telegram: TelegramClient,
-    ) -> Result<(Self, JoinHandle<()>)> {
-        let chat_key = format!("chat_{}_{}_{}", me.id(), chat.id(), ws.workspace);
-        let state_key = format!("sta_{}_{}_{}", me.id(), chat.id(), ws.workspace);
+    async fn maybe_spawn(context: Arc<SyncContext>) -> Result<(Self, JoinHandle<()>)> {
+        let chat_id = context.chat.id();
 
-        let workspace_services = WorkspaceServices::new(&ws.transactor_url, ws.workspace)?;
+        let chat_key = format!(
+            "chat_{}_{}_{}",
+            context.worker.me.id(),
+            chat_id,
+            context.workspace_id
+        );
+        let state_key = format!(
+            "sta_{}_{}_{}",
+            context.worker.me.id(),
+            chat_id,
+            context.workspace_id
+        );
 
-        let exporter = Exporter::new(
-            chat_key,
-            &me,
-            chat,
-            ws,
-            telegram.clone(),
-            global_services.clone(),
-            workspace_services,
-        )
-        .await?;
+        let exporter = Exporter::new(chat_key, context.clone()).await?;
 
         let (sender_backfill, receiver_backfill) = mpsc::channel(1);
         let (sender_realtime, receiver_realtime) = mpsc::channel(16);
 
-        let state = SyncState::load(chat.id(), state_key, global_services.clone()).await?;
+        let state = SyncState::load(chat_id, state_key, context.worker.global.clone()).await?;
         let progress = exporter.progress();
 
         let export = TaskBuilder::new()
-            .name(&format!("exporter-{}", chat.id()))
+            .name(&format!("exporter-{}", chat_id))
             .spawn(Self::export_task(
+                context.clone(),
                 state,
                 progress,
                 exporter,
-                chat.clone(),
                 receiver_backfill,
                 receiver_realtime,
             ))?;
 
         Ok((
             SyncProcess {
-                chat: chat.clone(),
                 sender_realtime,
                 sender_backfill,
-                telegram,
-                global_services,
-                me,
                 progress,
+                context,
             },
             export,
         ))
     }
 
-    #[instrument(level = "debug", skip_all, fields(telegram_id = %self.me.id(), chat_id = %self.chat.id(), chat_name = %self.chat.card_title()))]
+    #[instrument(level = "debug", skip_all, fields(telegram_id = %self.context.worker.me.id(), chat_id = %self.context.chat.id(), chat_name = %self.context.chat.card_title()))]
     pub fn sync_message(&self, message: &Message) -> Result<()> {
-        let chat_id = self.chat.id();
         let message_id = message.id();
 
-        trace!(chat = chat_id, message = message_id, "Sync message");
+        trace!(message = message_id, "Sync message");
 
         if let Err(error) = self
             .sender_realtime
@@ -150,7 +131,7 @@ impl SyncProcess {
         Ok(())
     }
 
-    #[instrument(level = "debug", skip_all, fields(telegram_id = %self.me.id(), chat_id = %self.chat.id(), chat_name = %self.chat.card_title()))]
+    #[instrument(level = "debug", skip_all, fields(telegram_id = %self.context.worker.me.id(), chat_id = %self.context.chat.id(), chat_name = %self.context.chat.card_title()))]
     pub fn delete_messages(&self, messages: &[i32]) -> Result<()> {
         for id in messages {
             if let Err(error) = self
@@ -164,12 +145,12 @@ impl SyncProcess {
         Ok(())
     }
 
-    #[instrument(level = "debug", name="export", skip_all, fields(chat_id = %chat.id(), chat_name = %chat.card_title()))]
+    #[instrument(level = "debug", name="export", skip_all, fields(chat_id = %context.chat.id(), chat_name = %context.chat.card_title()))]
     async fn export_task(
+        context: Arc<SyncContext>,
         mut state: SyncState,
         mut progress: SyncProgress,
         mut exporter: Exporter,
-        chat: Chat,
         mut receiver_backfill: mpsc::Receiver<Arc<ImporterEvent>>,
         mut receiver_realtime: mpsc::Receiver<Arc<ImporterEvent>>,
     ) {
@@ -298,11 +279,15 @@ impl SyncProcess {
         }
     }
 
-    #[instrument(level = "debug", skip_all, fields(id = _id,  telegram_id = %self.me.id(), chat_id = %self.chat.id(), chat_name = %self.chat.card_title(), progress = ?self.progress))]
+    #[instrument(level = "debug", skip_all, fields(id = _id,  telegram_id = %self.context.worker.me.id(), chat_id = %self.context.chat.id(), chat_name = %self.context.chat.card_title(), progress = ?self.progress))]
     async fn backfill(&self, _id: u32) {
         debug!("Backfill begin");
 
-        let mut messages = self.telegram.iter_messages(self.chat.pack());
+        let mut messages = self
+            .context
+            .worker
+            .telegram
+            .iter_messages(self.context.chat.pack());
         if let SyncProgress::Progress(offset) = self.progress {
             messages = messages.offset_id(offset);
         }
@@ -325,10 +310,12 @@ impl SyncProcess {
 
             let next = time::timeout(Duration::from_secs(30), messages.next());
 
-            self.global_services
+            self.context
+                .worker
+                .global
                 .limiters()
                 .get_history
-                .until_key_ready(&self.me.id())
+                .until_key_ready(&self.context.worker.me.id())
                 .await;
 
             match next.await {
@@ -363,17 +350,15 @@ impl SyncProcess {
 }
 
 pub struct Sync {
-    telegram: TelegramClient,
-    config: Arc<WorkerConfig>,
     syncs: MultiMap<i64, Arc<SyncProcess>>,
     cleanup: Arc<Mutex<Vec<JoinHandle<()>>>>,
+    context: Arc<WorkerContext>,
 }
 
 impl Sync {
-    pub fn new(telegram: TelegramClient, config: Arc<WorkerConfig>) -> Self {
+    pub fn new(context: Arc<WorkerContext>) -> Self {
         Self {
-            telegram,
-            config,
+            context,
             syncs: MultiMap::new(),
             cleanup: Arc::default(),
         }
@@ -382,23 +367,19 @@ impl Sync {
     pub async fn spawn(&mut self) -> Result<()> {
         self.syncs.clear();
 
-        let global_services = &self.config.global_services;
+        let global_services = &self.context.global;
 
-        let me = Arc::new(self.telegram.get_me().await?);
+        let me = Arc::new(self.context.telegram.get_me().await?);
         let integrations = global_services
             .account()
             .find_workspace_integrations(me.id())
             .await?;
 
-        let mut iter_dialogs = self.telegram.iter_dialogs();
+        let mut iter_dialogs = self.context.telegram.iter_dialogs();
 
         while let Some(dialog) = iter_dialogs.next().await? {
-            let chat = dialog.chat();
+            let chat = Arc::new(dialog.chat().clone());
             let chat_id = chat.id();
-
-            // if chat_id != 1771155422 {
-            //       continue;
-            //   }
 
             let not_too_old = dialog
                 .last_message
@@ -408,14 +389,14 @@ impl Sync {
 
             if not_too_old {
                 for ws in &integrations {
-                    let sync = SyncProcess::maybe_spawn(
-                        me.clone(),
-                        chat,
-                        ws,
-                        global_services.clone(),
-                        self.telegram.clone(),
-                    )
-                    .await;
+                    let context = Arc::new(SyncContext::new(
+                        self.context.clone(),
+                        chat.clone(),
+                        &ws.transactor_url,
+                        ws.workspace,
+                    )?);
+
+                    let sync = SyncProcess::maybe_spawn(context).await;
 
                     match sync {
                         Ok((sync, export)) => {
@@ -439,12 +420,7 @@ impl Sync {
             .map(|(_, sync)| sync.clone())
             .collect::<Vec<_>>();
 
-        let semaphore = self
-            .config
-            .global_services
-            .limiters()
-            .sync_semaphore
-            .clone();
+        let semaphore = self.context.global.limiters().sync_semaphore.clone();
 
         let cleanup = self.cleanup.clone();
 
@@ -480,7 +456,7 @@ impl Sync {
         };
 
         let handle = TaskBuilder::new()
-            .name(&format!("scheduler-{}", self.config.id))
+            .name(&format!("scheduler-{}", self.context.me.id()))
             .spawn(task)?;
 
         self.cleanup.lock().await.push(handle);
