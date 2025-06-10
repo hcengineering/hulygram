@@ -156,11 +156,20 @@ impl SyncState {
     }
 
     pub fn lookup(&self, id: i32) -> Option<&Entry> {
+        //let mut x = self.added.by_telegram_id.keys().collect::<Vec<_>>();
+        //x.sort();
+
+        //trace!(id, ids = ?x, "Lookup");
+
         self.added
             .by_telegram_id
             .get(&id)
             .or_else(|| self.index.by_telegram_id.get(&id))
             .filter(|entry| !self.deleted.contains(&entry.telegram_message_id))
+    }
+
+    pub fn is_deleted(&self, id: i32) -> bool {
+        self.deleted.contains(&id)
     }
 
     pub fn delete(&mut self, id: i32) {

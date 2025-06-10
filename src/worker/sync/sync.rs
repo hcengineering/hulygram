@@ -13,6 +13,7 @@ use crate::{
 };
 use anyhow::Result;
 use chrono::TimeDelta;
+use ciborium::de;
 use grammers_client::{
     Client as TelegramClient,
     types::{Chat, Message, User},
@@ -27,10 +28,13 @@ use tokio::{
     time::{self, Duration, Instant},
 };
 use tracing::*;
+use tracing_subscriber::field::debug;
 
 use super::{export::Exporter, state::SyncState};
 
-#[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(
+    Debug, Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Default, derive_more::IsVariant,
+)]
 pub enum SyncProgress {
     #[default]
     Unsynced,
@@ -70,7 +74,7 @@ struct SyncProcess {
 enum ImporterEvent {
     Message(Message),
     Delete(i32),
-    BatchEnd(bool),
+    BackfillComplete,
 }
 
 impl SyncProcess {
@@ -108,6 +112,7 @@ impl SyncProcess {
             .name(&format!("exporter-{}", chat.id()))
             .spawn(Self::export_task(
                 state,
+                progress,
                 exporter,
                 chat.clone(),
                 receiver_backfill,
@@ -162,12 +167,12 @@ impl SyncProcess {
     #[instrument(level = "debug", name="export", skip_all, fields(chat_id = %chat.id(), chat_name = %chat.card_title()))]
     async fn export_task(
         mut state: SyncState,
+        mut progress: SyncProgress,
         mut exporter: Exporter,
         chat: Chat,
         mut receiver_backfill: mpsc::Receiver<Arc<ImporterEvent>>,
         mut receiver_realtime: mpsc::Receiver<Arc<ImporterEvent>>,
     ) {
-        let mut progress = exporter.progress();
         let mut seen = HashSet::new();
         let mut persist_state = time::interval(Duration::from_secs(10));
         persist_state.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -219,7 +224,7 @@ impl SyncProcess {
                         let state_entry = state.lookup(id).map(ToOwned::to_owned);
 
                         let result = match state_entry {
-                            None => {
+                            None if !state.is_deleted(id) => {
                                 // Unknown
                                 trace!("New");
                                 exporter.create(&message).await.map(Option::Some)
@@ -234,7 +239,10 @@ impl SyncProcess {
                                     .map(Option::Some)
                             }
 
-                            Some(_) => Ok(None),
+                            _ => {
+                                trace!("Skipped");
+                                Ok(None)
+                            }
                         };
 
                         match result {
@@ -242,7 +250,7 @@ impl SyncProcess {
                                 state.upsert(&entry);
                             }
                             Ok(None) => {
-                                //progress = SyncProgress::Progress(message.id());
+                                //
                             }
 
                             Err(e) => {
@@ -250,7 +258,9 @@ impl SyncProcess {
                             }
                         }
 
-                        progress = SyncProgress::Progress(message.id());
+                        if !progress.is_complete() {
+                            progress = SyncProgress::Progress(message.id());
+                        }
                     }
 
                     ImporterEvent::Delete(message) => {
@@ -263,8 +273,8 @@ impl SyncProcess {
                         }
                     }
 
-                    ImporterEvent::BatchEnd(_progress) => {
-                        debug!("Batch end");
+                    ImporterEvent::BackfillComplete => {
+                        trace!("Backfill Complete");
 
                         progress = SyncProgress::Complete;
 
@@ -279,6 +289,7 @@ impl SyncProcess {
 
                         if !crate::config::CONFIG.dry_run {
                             let _ = state.persist().await;
+
                             _ = exporter.set_progress(progress).await;
                         }
                     }
@@ -289,10 +300,6 @@ impl SyncProcess {
 
     #[instrument(level = "debug", skip_all, fields(id = _id,  telegram_id = %self.me.id(), chat_id = %self.chat.id(), chat_name = %self.chat.card_title(), progress = ?self.progress))]
     async fn backfill(&self, _id: u32) {
-        if matches!(self.progress, SyncProgress::Complete) {
-            return;
-        }
-
         debug!("Backfill begin");
 
         let mut messages = self.telegram.iter_messages(self.chat.pack());
@@ -305,13 +312,12 @@ impl SyncProcess {
         loop {
             count += 1;
 
-            // if complete - break after limit reached
-            if self.progress == SyncProgress::Complete {
+            if self.progress.is_complete() {
                 if count >= 100 {
                     trace!("Limit reached");
                     let _ = self
                         .sender_backfill
-                        .send(Arc::new(ImporterEvent::BatchEnd(true)))
+                        .send(Arc::new(ImporterEvent::BackfillComplete))
                         .await;
                     break;
                 }
@@ -336,10 +342,7 @@ impl SyncProcess {
                     trace!("No more messages");
                     let _ = self
                         .sender_backfill
-                        .send(Arc::new(ImporterEvent::BatchEnd(matches!(
-                            self.progress,
-                            SyncProgress::Complete
-                        ))))
+                        .send(Arc::new(ImporterEvent::BackfillComplete))
                         .await;
                     break;
                 }
@@ -392,6 +395,10 @@ impl Sync {
         while let Some(dialog) = iter_dialogs.next().await? {
             let chat = dialog.chat();
             let chat_id = chat.id();
+
+            // if chat_id != 1771155422 {
+            //       continue;
+            //   }
 
             let not_too_old = dialog
                 .last_message
