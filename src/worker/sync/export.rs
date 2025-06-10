@@ -295,6 +295,8 @@ impl Exporter {
         let info = self.ensure_channel().await?;
 
         if info.progress != progress {
+            debug!(?progress, "Persist progress");
+
             info.progress = progress;
 
             let info = info.clone();

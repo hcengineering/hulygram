@@ -178,8 +178,6 @@ impl SyncProcess {
             if Instant::now() - last_persist > Duration::from_secs(30) {
                 last_persist = Instant::now();
 
-                debug!(?progress, "Persisting state");
-
                 if !crate::config::CONFIG.dry_run {
                     if let Err(error) = state.persist().await {
                         error!(%error, "Cannot persist state");
@@ -289,28 +287,20 @@ impl SyncProcess {
         }
     }
 
-    #[instrument(level = "debug", skip_all, fields(id = _id,  telegram_id = %self.me.id(), chat_id = %self.chat.id(), chat_name = %self.chat.card_title()))]
+    #[instrument(level = "debug", skip_all, fields(id = _id,  telegram_id = %self.me.id(), chat_id = %self.chat.id(), chat_name = %self.chat.card_title(), progress = ?self.progress))]
     async fn backfill(&self, _id: u32) {
         if matches!(self.progress, SyncProgress::Complete) {
             return;
         }
 
-        debug!(progress = ?self.progress, "Backfill begin");
+        debug!("Backfill begin");
 
         let mut messages = self.telegram.iter_messages(self.chat.pack());
         if let SyncProgress::Progress(offset) = self.progress {
-            debug!(offset, "Continue from offset");
             messages = messages.offset_id(offset);
         }
 
         let mut count = 0;
-
-        /*
-        self.global_services
-            .limiters()
-            .get_dialog
-            .until_key_ready(&self.me.id())
-            .await;*/
 
         loop {
             count += 1;
@@ -318,7 +308,7 @@ impl SyncProcess {
             // if complete - break after limit reached
             if self.progress == SyncProgress::Complete {
                 if count >= 100 {
-                    debug!("Limit reached");
+                    trace!("Limit reached");
                     let _ = self
                         .sender_backfill
                         .send(Arc::new(ImporterEvent::BatchEnd(true)))
@@ -343,7 +333,7 @@ impl SyncProcess {
                         .await;
                 }
                 Ok(Ok(_)) => {
-                    debug!("No more messages");
+                    trace!("No more messages");
                     let _ = self
                         .sender_backfill
                         .send(Arc::new(ImporterEvent::BatchEnd(matches!(
@@ -476,7 +466,7 @@ impl Sync {
                         cleanup.lock().await.push(handle);
                     }
                     Err(error) => {
-                        error!(%error, "Cannot spawn sync");
+                        error!(%error, "Cannot spawn backfill task");
                     }
                 }
             }
