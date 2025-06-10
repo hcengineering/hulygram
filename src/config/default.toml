@@ -5,7 +5,7 @@ service_id = "hulygram"
 kvs_namespace = "hulygram"
 event_topic = "hulygun"
 allowed_dialog_ids = "4982993114,4937631480,1044298783,1974697595"
-get_file_rate_limit = 10
+get_file_rate_limit = 5
 sync_process_limit = 10
 get_history_rate_limit = 3000
 
