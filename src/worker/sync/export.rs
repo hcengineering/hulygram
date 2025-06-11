@@ -23,7 +23,7 @@ use uuid::Uuid;
 
 use super::{
     blob::{BlobClient, Sender as BlobSender},
-    state::{Entry as StateEntry, EntryBuilder as StateEntryBuilder},
+    state::state::{Entry as StateEntry, EntryBuilder as StateEntryBuilder, GroupRole},
     sync::{DialogInfo, SyncProgress},
     tx::TransactorExt,
 };
@@ -34,7 +34,6 @@ use crate::{
         chat::ChatExt,
         limiters::TelegramLimiter,
         services::{GlobalServices, WorkspaceServices},
-        sync::state::GroupRole,
     },
 };
 

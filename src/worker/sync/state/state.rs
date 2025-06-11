@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 use tracing::*;
 use uuid::Uuid;
 
+use super::super::sync::SyncProgress;
 use crate::worker::services::GlobalServices;
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -215,5 +216,14 @@ impl SyncState {
         }
 
         Ok(())
+    }
+
+    async fn set_progress(&mut self, progress: SyncProgress) -> Result<()> {
+        //
+        unimplemented!()
+    }
+
+    fn progress(&self) -> SyncProgress {
+        SyncProgress::Unsynced
     }
 }
