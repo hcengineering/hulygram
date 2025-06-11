@@ -1,201 +1,97 @@
-use std::{collections::HashMap, sync::Arc, time::Duration};
+use std::{collections::HashMap, sync::Arc};
 
-use anyhow::{Result, anyhow, bail};
-use grammers_client::{
-    Client as TelegramClient,
-    client::files::DownloadIter,
-    types::{Downloadable, Media, Message},
-};
+use anyhow::{Result, anyhow};
+use chrono::{DateTime, Utc};
+use grammers_client::types::{Chat, Media, Message};
 use hulyrs::services::{
     transactor::{
         event::{
-            CreateFileEventBuilder, CreateMessageEventBuilder, CreatePatchEventBuilder,
-            FileDataBuilder, MessageRequestType, PatchData,
+            BlobDataBuilder, BlobPatchEventBuilder, BlobPatchOperation, CreateMessageEventBuilder,
+            MessageRequestType, MessageType, RemovePatchEventBuilder, UpdatePatchEventBuilder,
         },
-        person::{EnsurePerson, EnsurePersonRequest},
+        person::{EnsurePerson, EnsurePersonRequest, EnsurePersonRequestBuilder},
     },
-    types::PersonId,
+    types::{PersonId, SocialIdType},
 };
-use rand::Rng;
-use tokio::time;
+use redis::AsyncCommands;
+use serde::{Deserialize, Serialize};
+use serde_json as json;
 use tracing::*;
-use uuid::Uuid;
 
-use super::{
-    blob::{BlobClient, Sender as BlobSender},
-    context::SyncContext,
-    state::state::{Entry as StateEntry, EntryBuilder as StateEntryBuilder, GroupRole},
-    sync::{DialogInfo, SyncProgress},
-    tx::TransactorExt,
-};
+use super::{context::SyncContext, media::MediaTransfer, tx::TransactorExt};
 use crate::{
     CONFIG,
     context::GlobalContext,
-    worker::{chat::ChatExt, limiters::TelegramLimiter},
+    worker::{chat::ChatExt, sync::state::BlobDescriptor},
 };
 
-type MessageId = i64;
+pub type MessageId = String;
 
-trait HulyMessageId {
+pub trait HulyMessageId {
     fn huly_message_id(&self) -> MessageId;
-    fn huly_blob_id(&self) -> Uuid;
 }
 
 impl HulyMessageId for Message {
     fn huly_message_id(&self) -> MessageId {
-        (self.chat().id(), self.id()).huly_message_id()
-    }
-
-    fn huly_blob_id(&self) -> Uuid {
-        (self.chat().id(), self.id()).huly_blob_id()
+        self.id().to_string()
     }
 }
 
-impl HulyMessageId for (i64, i32) {
-    fn huly_message_id(&self) -> MessageId {
-        //Uuid::new_v4()
-
-        rand::rng().random()
-    }
-
-    fn huly_blob_id(&self) -> Uuid {
-        Uuid::new_v4()
-    }
+trait MessageExt {
+    fn ensure_person_request(&self) -> EnsurePersonRequest;
 }
 
-trait DownloadIterExt {
-    async fn next_timeout(&mut self) -> Result<Option<Vec<u8>>>;
-}
+impl MessageExt for Message {
+    fn ensure_person_request(&self) -> EnsurePersonRequest {
+        fn names(chat: &Chat) -> (String, Option<String>) {
+            match chat {
+                Chat::User(user) => (
+                    user.first_name()
+                        .map(ToString::to_string)
+                        .unwrap_or("Deleted User".to_string()),
+                    user.last_name().map(ToOwned::to_owned),
+                ),
 
-impl DownloadIterExt for DownloadIter {
-    async fn next_timeout(&mut self) -> Result<Option<Vec<u8>>> {
-        match time::timeout(Duration::from_secs(30), self.next()).await {
-            Ok(x) => x.map_err(Into::into),
-            Err(_) => {
-                anyhow::bail!("Timeout, downloadning blob chunk");
+                Chat::Channel(channel) => (channel.title().to_owned(), None),
+
+                Chat::Group(group) => (group.title().unwrap_or("Telegram Group").to_owned(), None),
             }
         }
-    }
-}
 
-trait TelegramExt {
-    async fn download_all<D: Downloadable>(
-        &self,
-        d: &D,
-        limiter: &TelegramLimiter,
-    ) -> Result<Vec<u8>>;
-    async fn download_in_chunks<D: Downloadable>(
-        &self,
-        d: &D,
-        sender: BlobSender,
-        limiter: &TelegramLimiter,
-    ) -> Result<()>;
-}
+        let sender = self.sender().unwrap_or(self.chat());
 
-impl TelegramExt for TelegramClient {
-    async fn download_all<D: Downloadable>(
-        &self,
-        d: &D,
-        limiter: &TelegramLimiter,
-    ) -> Result<Vec<u8>> {
-        let mut bytes = Vec::new();
-        let mut download = self.iter_download(d);
+        let (first_name, last_name) = names(&sender);
 
-        let limiter_key = self.get_me().await?.id();
-
-        while let Some(chunk) = download.next_timeout().await? {
-            bytes.extend_from_slice(&chunk);
-            limiter.until_key_ready(&limiter_key).await;
-        }
-
-        Ok(bytes)
-    }
-
-    #[instrument(level = "trace", skip_all)]
-    async fn download_in_chunks<D: Downloadable>(
-        &self,
-        d: &D,
-        sender: BlobSender,
-        limiter: &TelegramLimiter,
-    ) -> Result<()> {
-        trace!("Download start");
-
-        let mut download = self.iter_download(d);
-
-        let limiter_key = self.get_me().await?.id();
-
-        let mut nchunk = 0;
-        loop {
-            limiter.until_key_ready(&limiter_key).await;
-
-            match download.next_timeout().await {
-                Ok(Some(chunk)) => {
-                    nchunk += 1;
-                    trace!(nchunk, "Chunk");
-                    sender.send(Ok(chunk)).await?
-                }
-                Ok(None) => {
-                    break {
-                        trace!("Download complete");
-                        Ok(())
-                    };
-                }
-                Err(error) => {
-                    let message = error.to_string();
-
-                    warn!(%error, "Chunk error");
-
-                    sender
-                        .send(Err(std::io::Error::new(std::io::ErrorKind::Other, error)))
-                        .await?;
-
-                    break Err(anyhow::anyhow!("{}", message));
-                }
-            }
-        }
+        EnsurePersonRequestBuilder::default()
+            .first_name(first_name)
+            .last_name(last_name)
+            .social_type(SocialIdType::Telegram)
+            .social_value(sender.id().to_string())
+            .build()
+            .unwrap()
     }
 }
 
 #[derive(Clone)]
 pub(super) struct Exporter {
-    info_key: String,
-    pub info: Option<DialogInfo>,
     global_context: Arc<GlobalContext>,
-    context: Arc<SyncContext>,
+    pub context: Arc<SyncContext>,
     groups: HashMap<i64, MessageId>,
     social_ids: HashMap<String, PersonId>,
 }
 
+#[derive(Deserialize, Serialize)]
+pub struct CardInfo {
+    space_id: String,
+    card_id: String,
+}
+
 impl Exporter {
     #[instrument(level = "trace", skip_all, fields(chat = %context.chat.id(), user = %context.worker.me.id(), account = %context.worker.account_id, workspace = %context.workspace_id))]
-    pub(super) async fn new(info_key: String, context: Arc<SyncContext>) -> Result<Self> {
+    pub(super) async fn new(context: Arc<SyncContext>) -> Result<Self> {
         let global_context = context.worker.global.clone();
 
-        let info = global_context.kvs().get(&info_key).await?;
-        let info = if let Some(info) = &info {
-            let info = serde_json::from_slice::<DialogInfo>(info)?;
-
-            trace!("Chat info found");
-
-            //let tx = workspace_services.transactor();
-            //let is_found = tx.find_channel(&info.huly_channel).await?;
-
-            let is_found = true;
-
-            if is_found {
-                Some(info)
-            } else {
-                trace!("Channel not found");
-                bail!("NoChannel")
-            }
-        } else {
-            trace!("Chat info not found");
-            None
-        };
-
         let exporter = Self {
-            info_key,
-            info,
             global_context,
             context,
             groups: HashMap::new(),
@@ -205,104 +101,84 @@ impl Exporter {
         Ok(exporter)
     }
 
-    async fn ensure_channel(&mut self) -> Result<&mut DialogInfo> {
+    #[instrument(level = "trace", skip_all)]
+    pub async fn ensure_card(&mut self) -> Result<Option<CardInfo>> {
+        let chat = &self.context.chat;
         let tx = self.context.transactor();
+        let mut redis = self.global_context.redis();
+        let key = format!("{}.card", self.context.sync_id);
 
-        if self.info.is_none() {
-            let card_title = self.context.chat.card_title();
-            let is_private = !CONFIG
-                .allowed_dialog_ids
-                .contains(&self.context.chat.id().to_string());
+        let card = match redis.get::<_, Option<Vec<u8>>>(&key).await? {
+            Some(card) => {
+                let card = json::from_slice::<CardInfo>(&card)?;
 
-            let (space, channel) = if is_private {
-                let person_id = tx
-                    .find_person(self.context.worker.account_id)
-                    .await?
-                    .ok_or_else(|| {
-                        warn!("Person not found");
-                        anyhow!("NoPerson")
+                if tx.find_channel(&card.card_id).await? {
+                    Some(card)
+                } else {
+                    None
+                }
+            }
+            None => {
+                let card_title = chat.card_title();
+                let is_private = !CONFIG.allowed_dialog_ids.contains(&chat.id().to_string());
+                let card_id = ksuid::Ksuid::generate().to_base62();
+
+                let space_id = if is_private {
+                    let person_id = tx
+                        .find_person(self.context.worker.account_id)
+                        .await?
+                        .ok_or_else(|| {
+                            warn!("Person not found");
+                            anyhow!("NoPerson")
+                        })?;
+
+                    let space_id = tx.find_personal_space(&person_id).await?.ok_or_else(|| {
+                        warn!(%person_id, "Personal space not found");
+                        anyhow!("NoPersonSpace")
                     })?;
 
-                let space_id = tx.find_personal_space(&person_id).await?.ok_or_else(|| {
-                    warn!(%person_id, "Personal space not found");
-                    anyhow!("NoPersonSpace")
-                })?;
-
-                let channel = tx
-                    .create_channel(&self.context.worker.social_id, &space_id, &card_title)
+                    tx.create_channel(
+                        &card_id,
+                        &self.context.worker.social_id,
+                        &space_id,
+                        &card_title,
+                    )
                     .await?;
 
-                (space_id, channel)
-            } else {
-                let space = "card:space:Default".to_owned();
+                    space_id
+                } else {
+                    let space = "card:space:Default".to_owned();
 
-                let channel = tx
-                    .create_channel(&self.context.worker.social_id, &space, &card_title)
+                    tx.create_channel(
+                        &card_id,
+                        &self.context.worker.social_id,
+                        &space,
+                        &card_title,
+                    )
                     .await?;
 
-                (space, channel)
-            };
+                    space
+                };
 
-            let info = DialogInfo {
-                telegram_user: self.context.worker.me.id(),
-                telegram_type: self.context.chat.r#type(),
-                telegram_chat_id: self.context.chat.id(),
+                let card = CardInfo { space_id, card_id };
 
-                huly_workspace: self.context.workspace_id,
-                huly_account: self.context.worker.account_id,
-                huly_social_id: self.context.worker.social_id.clone(),
-                huly_channel: channel.clone(),
-                huly_space: space,
-                huly_title: card_title,
+                let _: () = redis.set(&key, &json::to_vec(&card)?).await?;
 
-                progress: SyncProgress::Unsynced,
-            };
-
-            if !crate::config::CONFIG.dry_run {
-                self.global_context
-                    .kvs()
-                    .upsert(&self.info_key, &serde_json::to_vec(&info)?)
-                    .await?;
+                Some(card)
             }
+        };
 
-            self.info = Some(info);
-        }
-
-        Ok(self.info.as_mut().unwrap())
+        Ok(card)
     }
 
-    pub fn progress(&self) -> SyncProgress {
-        self.info.as_ref().map(|i| i.progress).unwrap_or_default()
-    }
+    #[instrument(level = "trace", skip_all)]
+    pub async fn ensure_person(&mut self, message: &Message) -> Result<PersonId> {
+        let request = message.ensure_person_request();
 
-    #[instrument(level = "trace", skip(self))]
-    pub async fn set_progress(&mut self, progress: SyncProgress) -> Result<()> {
-        let info = self.ensure_channel().await?;
-
-        if info.progress != progress {
-            debug!(?progress, "Persist progress");
-
-            info.progress = progress;
-
-            let info = info.clone();
-
-            if !crate::config::CONFIG.dry_run {
-                self.global_context
-                    .kvs()
-                    .upsert(&self.info_key, &serde_json::to_vec(&info)?)
-                    .await?;
-            }
-        }
-
-        Ok(())
-    }
-
-    #[instrument(level = "trace", skip_all, fields(social = %request.social_value))]
-    async fn ensure_person(&mut self, request: EnsurePersonRequest) -> Result<PersonId> {
         if let Some(person_id) = self.social_ids.get(&request.social_value) {
             return Ok(person_id.clone());
         } else {
-            trace!("Cache miss");
+            trace!(social_value = request.social_value, "CacheMiss");
             let ensured = self.context.transactor().ensure_person(&request).await?;
 
             self.social_ids
@@ -313,35 +189,25 @@ impl Exporter {
     }
 
     #[instrument(level = "trace", skip_all)]
-    pub async fn create(&mut self, message: &Message) -> Result<StateEntry> {
+    pub async fn new_message(
+        &mut self,
+        card: &CardInfo,
+        person_id: &String,
+        message: &Message,
+    ) -> Result<String> {
         let dry_run = crate::config::CONFIG.dry_run;
-        let info = self.ensure_channel().await?.clone();
-
-        let person_request = message
-            .sender()
-            .unwrap_or(message.chat())
-            .ensure_person_request();
-
-        let social_id = self.ensure_person(person_request).await?;
-
-        let huly_channel_id = &info.huly_channel;
-
-        let mut entry_builder = StateEntryBuilder::default();
-
-        entry_builder.telegram_message_id(message.id());
-        entry_builder.date(message.edit_date().unwrap_or(message.date()));
 
         let create_message = async || -> Result<MessageId> {
             let huly_message_id = message.huly_message_id();
 
             let create_event = CreateMessageEventBuilder::default()
-                .id(&huly_message_id.to_string())
-                .external_id(format!("{}:{}", info.telegram_chat_id, message.id()))
-                .card(huly_channel_id)
+                .message_id(huly_message_id.clone())
+                .message_type(MessageType::Message)
+                .card_id(card.card_id.clone())
                 .card_type("chat:masterTag:Channel")
                 .content(message.markdown_text())
-                .creator(&social_id)
-                .created(message.date())
+                .social_id(person_id)
+                .date(message.date())
                 .build()
                 .unwrap();
 
@@ -349,7 +215,7 @@ impl Exporter {
                 self.global_context
                     .hulygun()
                     .request(
-                        info.huly_workspace,
+                        self.context.workspace_id,
                         MessageRequestType::CreateMessage,
                         create_event,
                     )
@@ -363,17 +229,12 @@ impl Exporter {
             if let Some(root_message_id) = self.groups.get(&grouped_id) {
                 // the message is not first in the group, do update
                 if !message.markdown_text().is_empty() {
-                    let patch_data = PatchData::Update {
-                        content: Some(message.markdown_text()),
-                        data: None,
-                    };
-
-                    let patch_event = CreatePatchEventBuilder::default()
-                        .message(root_message_id.to_string())
-                        .message_created(message.date())
-                        .creator(&social_id)
-                        .card(huly_channel_id)
-                        .data(patch_data)
+                    let patch_event = UpdatePatchEventBuilder::default()
+                        .message_id(root_message_id.to_string())
+                        .date(message.date())
+                        .social_id(person_id)
+                        .card_id(card.card_id.clone())
+                        .content(message.markdown_text())
                         .build()
                         .unwrap();
 
@@ -381,26 +242,22 @@ impl Exporter {
                         self.global_context
                             .hulygun()
                             .request(
-                                info.huly_workspace,
-                                MessageRequestType::CreatePatch,
+                                self.context.workspace_id,
+                                MessageRequestType::UpdatePatch,
                                 patch_event,
                             )
                             .await?;
                     }
                 }
 
-                entry_builder.huly_message_id(*root_message_id);
-                entry_builder.group_role(Some(GroupRole::Member));
-
-                *root_message_id
+                root_message_id.clone()
             } else {
                 // the message is first in the group
                 let huly_message_id = create_message().await?;
-                self.groups.insert(grouped_id, huly_message_id);
-                trace!(%huly_message_id, "Group message created");
 
-                entry_builder.huly_message_id(huly_message_id);
-                entry_builder.group_role(Some(GroupRole::Root));
+                self.groups.insert(grouped_id, huly_message_id.clone());
+
+                trace!(%huly_message_id, "Group message created");
 
                 huly_message_id
             }
@@ -409,209 +266,155 @@ impl Exporter {
             let huly_message_id = create_message().await?;
             trace!(%huly_message_id, "Message created");
 
-            entry_builder.huly_message_id(huly_message_id);
-
             huly_message_id
         };
 
-        match message.media() {
-            Some(Media::Photo(photo)) => {
-                let blob = self
-                    .context
-                    .worker
-                    .telegram
-                    .download_all(&photo, &self.global_context.limiters().get_file)
-                    .await?;
-
-                let huly_blob_id = message.huly_blob_id();
-                let length = blob.len();
-
-                if let Ok(image_info) = imageinfo::ImageInfo::from_raw_data(&blob) {
-                    let ready = {
-                        let blobs = BlobClient::new(info.huly_workspace)?;
-
-                        let (sender, ready) =
-                            blobs.upload(huly_blob_id, length, image_info.mimetype)?;
-
-                        sender.send(Ok(blob)).await?;
-
-                        ready
-                    };
-
-                    // wait for upload to complete
-                    let _ = ready.await?;
-
-                    let file_data = FileDataBuilder::default()
-                        .blob_id(huly_blob_id)
-                        .size(length as u32)
-                        .mime_type(image_info.mimetype)
-                        .filename("photo.jpg")
-                        .meta([
-                            (
-                                "originalWidth".to_owned(),
-                                image_info.size.width.to_string(),
-                            ),
-                            (
-                                "originalHeight".to_owned(),
-                                image_info.size.height.to_string(),
-                            ),
-                        ])
-                        .build()?;
-
-                    let create_file_event = CreateFileEventBuilder::default()
-                        .card(huly_channel_id)
-                        .message(huly_message_id.to_string())
-                        .message_created(message.date())
-                        .creator(&social_id)
-                        .data(file_data)
-                        .build()?;
-
-                    if !dry_run {
-                        self.global_context
-                            .hulygun()
-                            .request(
-                                info.huly_workspace,
-                                MessageRequestType::CreateFile,
-                                create_file_event,
-                            )
-                            .await?;
-                    }
-
-                    entry_builder.huly_image_id(Some(huly_blob_id));
-
-                    trace!(blob=%huly_blob_id, "Blob attached");
-                }
-            }
-
-            Some(Media::Document(document)) => {
-                let huly_blob_id = message.huly_blob_id();
-                let mime_type = document.mime_type().unwrap_or("application/binary");
-                let length = document.size();
-
-                let blobs = BlobClient::new(info.huly_workspace)?;
-
-                let (sender, ready) = blobs.upload(huly_blob_id, length as usize, mime_type)?;
-                let download_result = self
-                    .context
-                    .worker
-                    .telegram
-                    .download_in_chunks(&document, sender, &self.global_context.limiters().get_file)
-                    .await;
-
-                let _ = ready.await?;
-
-                if download_result.is_ok() {
-                    let file_data = FileDataBuilder::default()
-                        .blob_id(huly_blob_id)
-                        .size(length as u32)
-                        .mime_type(mime_type)
-                        .filename(document.name())
-                        .build()?;
-
-                    let create_file = CreateFileEventBuilder::default()
-                        .card(huly_channel_id)
-                        .message(huly_message_id.to_string())
-                        .message_created(message.date())
-                        .creator(&social_id)
-                        .data(file_data)
-                        .build()?;
-
-                    if !dry_run {
-                        self.global_context
-                            .hulygun()
-                            .request(
-                                info.huly_workspace,
-                                MessageRequestType::CreateFile,
-                                create_file,
-                            )
-                            .await?;
-                    }
-
-                    entry_builder.huly_image_id(Some(huly_blob_id));
-                }
-            }
-            _ => {
-                //
-            }
-        }
-
-        Ok(entry_builder.build().unwrap())
-    }
-
-    #[instrument(level = "trace", skip_all)]
-    pub async fn update(
-        &mut self,
-        message: &Message,
-        mut state_entry: StateEntry,
-    ) -> Result<StateEntry> {
-        let dry_run = crate::config::CONFIG.dry_run;
-
-        let person_request = message
-            .sender()
-            .unwrap_or(message.chat())
-            .ensure_person_request();
-
-        let social_id = self.ensure_person(person_request).await?;
-
-        let info = self.ensure_channel().await?.clone();
-
-        let message_id = if let Some(group) = message.grouped_id() {
-            self.groups.get(&group).map(ToOwned::to_owned)
-        } else {
-            Some(message.huly_message_id())
-        };
-
-        if let Some(message_id) = message_id {
-            if !message.markdown_text().is_empty() {
-                let patch_data = PatchData::Update {
-                    content: Some(message.markdown_text()),
-                    data: None,
-                };
-
-                let patch = CreatePatchEventBuilder::default()
-                    .message(&message_id.to_string())
-                    .message_created(message.date())
-                    .creator(&social_id)
-                    .card(&info.huly_channel)
-                    .data(patch_data)
-                    .build()
-                    .unwrap();
-
-                if !dry_run {
-                    self.global_context
-                        .hulygun()
-                        .request(
-                            info.huly_workspace,
-                            MessageRequestType::CreatePatch,
-                            patch.clone(),
+        if let Some(media) = message.media() {
+            match media {
+                Media::Photo(photo) => {
+                    photo
+                        .transfer(
+                            self,
+                            message,
+                            card,
+                            huly_message_id.clone(),
+                            person_id.clone(),
                         )
                         .await?;
                 }
+
+                Media::Document(document) => {
+                    document
+                        .transfer(
+                            self,
+                            message,
+                            card,
+                            huly_message_id.clone(),
+                            person_id.clone(),
+                        )
+                        .await?;
+                }
+
+                _ => {
+                    //
+                }
             }
         }
 
-        state_entry.date = message.edit_date().unwrap_or(message.date());
-
-        Ok(state_entry)
+        Ok(huly_message_id)
     }
 
-    pub(super) async fn delete(&mut self, _message: i32) -> Result<()> {
-        //let _message_id = (self.info.telegram_chat_id, message).huly_message_id();
+    #[instrument(level = "trace", skip_all)]
+    pub async fn edit(
+        &mut self,
+        card: &CardInfo,
+        person_id: &PersonId,
+        huly_id: &String,
+        message: &Message,
+    ) -> Result<()> {
+        if !message.markdown_text().is_empty() {
+            let patch_event = UpdatePatchEventBuilder::default()
+                .message_id(huly_id)
+                .date(message.date())
+                .social_id(person_id)
+                .card_id(&card.card_id)
+                .content(message.markdown_text())
+                .build()
+                .unwrap();
 
-        //let _workspace = &self.info.huly_workspace;
+            if !crate::config::CONFIG.dry_run {
+                self.global_context
+                    .hulygun()
+                    .request(
+                        self.context.workspace_id,
+                        MessageRequestType::UpdatePatch,
+                        patch_event,
+                    )
+                    .await?;
+            }
+        }
 
-        /*
-        let remove = RemoveMessagesEventBuilder::default()
-            .card(&self.info.huly_channel)
-            .messages(vec![message_id.clone()])
+        Ok(())
+    }
+
+    pub(super) async fn delete(&mut self, card: &CardInfo, huly_id: &String) -> Result<()> {
+        let patch = RemovePatchEventBuilder::default()
+            .card_id(&card.card_id)
+            .message_id(huly_id)
+            .social_id(&self.context.worker.social_id)
+            .date(Utc::now())
             .build()
             .unwrap();
 
-        self.global_services
-            .hulygun()
-            .request(*workspace, MessageRequestType::RemoveMessages, remove)
-            .await?;
-        */
+        if !crate::config::CONFIG.dry_run {
+            self.global_context
+                .hulygun()
+                .request(
+                    self.context.workspace_id,
+                    MessageRequestType::RemovePatch,
+                    patch,
+                )
+                .await?;
+        }
+
+        Ok(())
+    }
+
+    pub async fn attach(
+        &self,
+        blob: BlobDescriptor,
+        card: &CardInfo,
+        message_id: MessageId,
+        social_id: PersonId,
+        date: DateTime<Utc>,
+    ) -> Result<()> {
+        let mut blob_data = BlobDataBuilder::default();
+
+        blob_data
+            .blob_id(blob.blob_id.to_string())
+            .size(blob.length as u32)
+            .mime_type(blob.mimetype);
+
+        if let Some((width, height)) = blob.size {
+            blob_data.metadata([
+                ("originalWidth".to_owned(), width.to_string().into()),
+                ("originalHeight".to_owned(), height.to_string().into()),
+            ]);
+        }
+
+        if let Some(file_name) = blob.file_name {
+            blob_data.file_name(file_name);
+        } else {
+            // choose extension based on mimetype
+            blob_data.file_name("photo.jpg");
+        }
+
+        let blob_data = blob_data.build()?;
+
+        let attach_event = BlobPatchEventBuilder::default()
+            .card_id(&card.card_id)
+            .message_id(message_id)
+            .date(date)
+            .social_id(social_id)
+            .operations(vec![BlobPatchOperation::Attach {
+                blobs: vec![blob_data],
+            }])
+            .build()?;
+
+        if !CONFIG.dry_run {
+            self.context
+                .worker
+                .global
+                .hulygun()
+                .request(
+                    self.context.workspace_id,
+                    MessageRequestType::BlobPatch,
+                    attach_event,
+                )
+                .await?;
+
+            trace!(blob_id=%blob.blob_id, "Blob attached");
+        }
 
         Ok(())
     }

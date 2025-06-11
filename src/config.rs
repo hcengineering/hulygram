@@ -34,6 +34,10 @@ pub struct Config {
     pub service_id: String,
     pub event_topic: String,
 
+    #[serde_as(as = "StringWithSeparator::<CommaSeparator, url::Url>")]
+    pub redis_urls: Vec<Url>,
+    pub redis_password: String,
+
     #[serde_as(as = "StringWithSeparator::<CommaSeparator, String>")]
     pub allowed_dialog_ids: HashSet<String>,
 

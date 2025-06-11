@@ -117,7 +117,10 @@ impl Worker {
         let config = Arc::new(config);
 
         let phone = &config.phone;
-        let params: InitParams = Default::default();
+        let params: InitParams = InitParams {
+            catch_up: true,
+            ..Default::default()
+        };
 
         let session_key = format!("ses_{}", phone);
 

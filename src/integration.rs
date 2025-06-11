@@ -1,7 +1,6 @@
 use std::collections::HashMap;
 
 use anyhow::{Result, anyhow};
-use ciborium::de;
 use serde::{Deserialize, Serialize};
 use serde_json as json;
 use tracing::*;
@@ -28,8 +27,10 @@ pub struct AccountIntegrationData {
 
 #[derive(Clone)]
 pub struct WorkspaceIntegration {
+    pub is_modified: bool,
     pub data: IntegrationData,
     pub workspace_id: WorkspaceUuid,
+    pub social_id: SocialIdId,
     pub endpoint: Url,
 }
 
@@ -37,20 +38,28 @@ pub struct WorkspaceIntegration {
 #[serde(rename_all = "camelCase")]
 pub struct IntegrationData {
     #[serde(default)]
-    config: Config,
-
-    #[serde(default)]
-    mappings: Vec<ChannelMapping>,
+    pub config: Config,
+    // #[serde(default)]
+    // pub mappings: Vec<ChannelMapping>,
 }
 
-#[derive(Serialize, Deserialize, Clone, Default)]
+#[derive(Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct Config {
     #[serde(default)]
-    pub auto_create: bool,
+    pub sync_all: bool,
 
     #[serde(default)]
     pub channels: Vec<ChannelConfig>,
+}
+
+impl Default for Config {
+    fn default() -> Self {
+        Self {
+            sync_all: true,
+            channels: Vec::default(),
+        }
+    }
 }
 
 #[derive(Serialize, Deserialize, Clone, Default)]
@@ -63,8 +72,47 @@ pub struct ChannelMapping {
 #[derive(Serialize, Deserialize, Clone, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct ChannelConfig {
-    telegram_id: i64,
-    enabled: bool,
+    pub telegram_id: i64,
+    pub enabled: bool,
+}
+
+impl WorkspaceIntegration {
+    pub fn is_enabled(&self, telegram_id: i64) -> bool {
+        self.data
+            .config
+            .channels
+            .iter()
+            .find(|c| c.telegram_id == telegram_id)
+            .map(|c| c.enabled)
+            .unwrap_or(false)
+    }
+
+    pub fn find_channel_config(&self, telegram_id: i64) -> Option<&ChannelConfig> {
+        self.data
+            .config
+            .channels
+            .iter()
+            .find(|c| c.telegram_id == telegram_id)
+    }
+
+    /*
+
+    pub fn find_channel_mapping(&self, telegram_id: i64) -> Option<&ChannelMapping> {
+        self.data
+            .mappings
+            .iter()
+            .find(|c| c.telegram_id == telegram_id)
+    }
+
+    pub fn add_channel_mapping(&mut self, telegram_id: i64, card_id: String) {
+        self.data.mappings.push(ChannelMapping {
+            telegram_id,
+            card_id,
+        });
+
+        self.is_modified = true;
+    }
+    */
 }
 
 pub trait TelegramIntegration {
@@ -83,6 +131,8 @@ pub trait TelegramIntegration {
         social_id: &PersonId,
         data: AccountIntegrationData,
     ) -> Result<()>;
+
+    async fn update_workspace_integration(&self, data: &WorkspaceIntegration) -> Result<()>;
 
     async fn ensure_workspace_integration(
         &self,
@@ -239,19 +289,35 @@ impl TelegramIntegration for AccountClient {
 
         let mut result = Vec::new();
 
-        for integration in integrations {
+        let create = |integration: Integration| {
             let workspace_id = integration.workspace_uuid.unwrap();
 
-            if let (Some(endpoint), Some(data)) = (ws_indexed.get(&workspace_id), integration.data)
-            {
-                if let Ok(data) = json::from_value::<IntegrationData>(data) {
-                    result.push(WorkspaceIntegration {
-                        data,
-                        workspace_id,
-                        endpoint: endpoint.to_owned(),
-                    });
+            if let Some(endpoint) = ws_indexed.get(&workspace_id) {
+                let data = if let Some(data) = integration.data {
+                    json::from_value::<IntegrationData>(data)?
                 } else {
-                    warn!(%workspace_id, "Cannot deserialize integration data");
+                    IntegrationData::default()
+                };
+
+                Ok(WorkspaceIntegration {
+                    is_modified: false,
+                    data,
+                    workspace_id,
+                    social_id: integration.social_id,
+                    endpoint: endpoint.to_owned(),
+                })
+            } else {
+                Err(anyhow!("NoWorkspace"))
+            }
+        };
+
+        for integration in integrations {
+            match create(integration) {
+                Ok(integration) => {
+                    result.push(integration);
+                }
+                Err(error) => {
+                    warn!(%error, "Cannot create workspace integration");
                 }
             }
         }
@@ -263,9 +329,9 @@ impl TelegramIntegration for AccountClient {
     async fn ensure_social_id(&self, claims: &Claims, id: i64) -> Result<PersonId> {
         let id = id.to_string();
 
-        let accountc = SERVICES.new_account_client(claims)?;
+        let account_client = SERVICES.new_account_client(claims)?;
 
-        let social_id = accountc
+        let social_id = account_client
             .get_social_ids(true)
             .await?
             .iter()
@@ -317,6 +383,7 @@ impl TelegramIntegration for AccountClient {
         Ok(())
     }
 
+    // ensure default workspace integration is created
     async fn ensure_workspace_integration(
         &self,
         social_id: &PersonId,
@@ -333,10 +400,10 @@ impl TelegramIntegration for AccountClient {
         {
             let data = IntegrationData {
                 config: Config {
-                    auto_create: true,
+                    sync_all: true,
                     channels: Vec::default(),
                 },
-                mappings: Vec::default(),
+                //  mappings: Vec::default(),
             };
 
             let workspace = Integration {
@@ -348,6 +415,19 @@ impl TelegramIntegration for AccountClient {
 
             self.create_integration(&workspace).await?;
         }
+
+        Ok(())
+    }
+
+    async fn update_workspace_integration(&self, integration: &WorkspaceIntegration) -> Result<()> {
+        let integration = Integration {
+            social_id: integration.social_id.clone(),
+            kind: INTEGRATION_KIND.to_string(),
+            workspace_uuid: Some(integration.workspace_id),
+            data: Some(json::to_value(integration.data.clone())?),
+        };
+
+        self.update_integration(&integration).await?;
 
         Ok(())
     }

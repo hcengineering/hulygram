@@ -1,6 +1,7 @@
 mod blob;
 mod context;
 mod export;
+mod media;
 pub mod state;
 mod sync;
 mod tx;

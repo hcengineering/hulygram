@@ -12,17 +12,18 @@ use serde_json::{Value, json};
 use tracing::*;
 
 pub(super) trait TransactorExt {
-    fn create_channel(
+    async fn create_channel(
         &self,
+        card_id: &str,
         social_id: &SocialIdId,
         space_id: &str,
         title: &str,
-    ) -> impl Future<Output = Result<String>>;
+    ) -> Result<()>;
 
     #[allow(dead_code)]
     async fn enumerate_channels(&self) -> Result<HashSet<String>>;
 
-    fn _find_channel(&self, channel_id: &str) -> impl Future<Output = Result<bool>>;
+    fn find_channel(&self, channel_id: &str) -> impl Future<Output = Result<bool>>;
 
     fn find_person(&self, person: PersonUuid) -> impl Future<Output = Result<Option<PersonId>>>;
 
@@ -37,17 +38,17 @@ fn id(v: Option<Value>) -> Option<String> {
 }
 
 impl TransactorExt for TransactorClient {
-    #[instrument(level = "trace", skip(self))]
+    #[instrument(level = "debug", skip(self))]
     async fn create_channel(
         &self,
+        card_id: &str,
         social_id: &SocialIdId,
         space_id: &str,
         title: &str,
-    ) -> Result<String> {
-        let channel_id = ksuid::Ksuid::generate().to_base62();
+    ) -> Result<()> {
         let now = chrono::Utc::now();
         let create_channel = CreateDocumentBuilder::default()
-            .object_id(&channel_id)
+            .object_id(card_id)
             .object_class("chat:masterTag:Channel")
             .created_by(social_id)
             .created_on(now)
@@ -62,12 +63,12 @@ impl TransactorExt for TransactorClient {
 
         self.tx::<Value, _>(create_channel).await?;
 
-        trace!(channel_id);
+        debug!("Created");
 
-        Ok(channel_id)
+        Ok(())
     }
 
-    async fn _find_channel(&self, channel_id: &str) -> Result<bool> {
+    async fn find_channel(&self, channel_id: &str) -> Result<bool> {
         let query = json!({
             "_id": channel_id,
         });

@@ -75,7 +75,7 @@ async fn main() -> anyhow::Result<()> {
         .service(&CONFIG.service_id)
         .build()?;
 
-    let context = Arc::new(context::GlobalContext::new(system_account)?);
+    let context = Arc::new(context::GlobalContext::new(system_account).await?);
 
     let supervisor = worker::new_supervisor(context.clone())?;
     supervisor.spawn_all().await?;

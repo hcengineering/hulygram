@@ -1,3 +1,5 @@
+set dotenv-load
+
 image arch='amd64':
     docker buildx build --tag=hardcoreeng/hulygram:latest --platform=linux/{{arch}} .
 
@@ -10,3 +12,7 @@ bytehound_server:
 
 pprof:
     ~/go/bin/pprof -no_browser -http 127.0.0.1:8888 target/debug/hulygram heap.pb.gz
+
+
+redis-cli:
+    redis-cli -h 127.0.0.1

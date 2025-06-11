@@ -1,4 +1,4 @@
-use grammers_client::types::Chat;
+use grammers_client::{grammers_tl_types::types::Message, types::Chat};
 use serde::{Deserialize, Serialize};
 
 use hulyrs::services::{
@@ -14,12 +14,21 @@ pub enum DialogType {
 }
 
 pub trait ChatExt {
+    fn is_deleted(&self) -> bool;
+    fn global_id(&self) -> String;
     fn r#type(&self) -> DialogType;
     fn card_title(&self) -> String;
-    fn ensure_person_request(&self) -> EnsurePersonRequest;
 }
 
 impl ChatExt for Chat {
+    fn is_deleted(&self) -> bool {
+        if let Chat::User(user) = self {
+            return user.deleted();
+        } else {
+            false
+        }
+    }
+
     fn r#type(&self) -> DialogType {
         match self {
             Chat::User(_) => DialogType::User,
@@ -36,43 +45,13 @@ impl ChatExt for Chat {
         }
     }
 
-    fn ensure_person_request(&self) -> EnsurePersonRequest {
+    fn global_id(&self) -> String {
         match self {
-            Chat::User(user) => {
-                let id = user.id();
-
-                let mut builder = EnsurePersonRequestBuilder::default();
-                match (user.first_name(), user.last_name()) {
-                    (Some(first), Some(last)) => builder.first_name(first).last_name(last),
-                    (Some(first), None) => builder.first_name(first),
-                    _ => builder.first_name("Telegram User"),
-                }
-                .social_type(SocialIdType::Telegram)
-                .social_value(id.to_string())
-                .build()
-            }
-
-            Chat::Channel(channel) => {
-                let id = channel.id();
-
-                EnsurePersonRequestBuilder::default()
-                    .first_name(channel.title())
-                    .last_name(String::default())
-                    .social_type(SocialIdType::Telegram)
-                    .social_value(id.to_string())
-                    .build()
-            }
-
+            Chat::User(user) => format!("u{}", user.id()),
             Chat::Group(group) => {
-                let id = group.id();
-                EnsurePersonRequestBuilder::default()
-                    .first_name(group.title().unwrap_or("Telegram Group"))
-                    .last_name(String::default())
-                    .social_type(SocialIdType::Telegram)
-                    .social_value(id.to_string())
-                    .build()
+                format!("g{}", group.id())
             }
+            Chat::Channel(channel) => format!("c{}", channel.id()),
         }
-        .unwrap()
     }
 }

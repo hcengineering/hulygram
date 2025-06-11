@@ -12,3 +12,6 @@ get_history_rate_limit = 3000
 blob_service_path = "http://localhost:4030"
 base_url = "https://hulygram.aristov.cc"
 dry_run = false
+
+redis_urls = "redis://127.0.0.1:6379"
+redis_password = "<invalid>"

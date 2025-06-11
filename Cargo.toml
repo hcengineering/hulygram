@@ -52,3 +52,8 @@ tikv-jemallocator = { version = "0.6.0", features = [
     "unprefixed_malloc_on_supported_platforms",
 ] }
 jemalloc_pprof = { version = "0.7.0", features = ["symbolize"] }
+dashmap = { version = "6.1.0", features = ["serde"] }
+redis = { version = "0.32.0", features = ["tokio-comp", "connection-manager"] }
+
+[features]
+redis-sentinel = ["redis/sentinel"]
