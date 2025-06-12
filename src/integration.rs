@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 
-use anyhow::Result;
+use anyhow::{Result, anyhow};
+use ciborium::de;
 use serde::{Deserialize, Serialize};
 use serde_json as json;
 use tracing::*;
@@ -27,10 +28,43 @@ pub struct AccountIntegrationData {
 
 #[derive(Clone)]
 pub struct WorkspaceIntegration {
-    pub account: AccountUuid,
-    pub workspace: WorkspaceUuid,
-    pub social_id: SocialIdId,
-    pub transactor_url: Url,
+    pub data: IntegrationData,
+    pub workspace_id: WorkspaceUuid,
+    pub endpoint: Url,
+}
+
+#[derive(Serialize, Deserialize, Clone, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct IntegrationData {
+    #[serde(default)]
+    config: Config,
+
+    #[serde(default)]
+    mappings: Vec<ChannelMapping>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct Config {
+    #[serde(default)]
+    pub auto_create: bool,
+
+    #[serde(default)]
+    pub channels: Vec<ChannelConfig>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct ChannelMapping {
+    pub telegram_id: i64,
+    pub card_id: String,
+}
+
+#[derive(Serialize, Deserialize, Clone, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct ChannelConfig {
+    telegram_id: i64,
+    enabled: bool,
 }
 
 pub trait TelegramIntegration {
@@ -39,6 +73,8 @@ pub trait TelegramIntegration {
     async fn find_account_integrations(&self, claims: &Claims) -> Result<Vec<AccountIntegration>>;
 
     async fn find_workspace_integrations(&self, user_id: i64) -> Result<Vec<WorkspaceIntegration>>;
+
+    async fn find_ids(&self, user_id: i64) -> Result<(AccountUuid, SocialIdId)>;
 
     async fn ensure_social_id(&self, claims: &Claims, id: i64) -> Result<PersonId>;
 
@@ -148,65 +184,79 @@ impl TelegramIntegration for AccountClient {
         Ok(result)
     }
 
+    async fn find_ids(&self, user_id: i64) -> Result<(AccountUuid, SocialIdId)> {
+        let key = format!("{}:{}", SOCIAL_KIND, user_id);
+
+        let account_id = self
+            .find_person_by_social_key(&key, true)
+            .await?
+            .ok_or(anyhow!("NoAccount"))?;
+
+        let social_id = self
+            .find_social_id_by_social_key(&key, true)
+            .await?
+            .ok_or(anyhow!("NoSocialId"))?;
+
+        Ok((account_id, social_id))
+    }
+
     // HORROR!!! (4+N requests)
     // finds all workspace integrations for the telegram user id
     async fn find_workspace_integrations(&self, user_id: i64) -> Result<Vec<WorkspaceIntegration>> {
-        let key = format!("{}:{}", SOCIAL_KIND, user_id);
-        let social_id = self.find_social_id_by_social_key(&key, true).await?;
-        let account_id = self.find_person_by_social_key(&key, true).await?;
+        let (account_id, social_id) = self.find_ids(user_id).await?;
 
         trace!(id = %user_id, ?social_id, ?account_id, "Find workspace integrations");
 
-        if let (Some(social_id), Some(account)) = (social_id, account_id) {
-            let claims = ClaimsBuilder::default().account(account).build()?;
+        let claims = ClaimsBuilder::default().account(account_id).build()?;
 
-            //let accountc = self.assume_claims(&claims)?;
+        //let accountc = self.assume_claims(&claims)?;
 
-            let accountc = SERVICES.new_account_client(&claims)?;
+        let accountc = SERVICES.new_account_client(&claims)?;
 
-            let mut ws_indexed = HashMap::new();
-            for ws in accountc.get_user_workspaces().await?.into_iter() {
-                let ws_login_info = accountc
-                    .select_workspace(&SelectWorkspaceParams {
-                        workspace_url: ws.workspace.url,
-                        kind: WorkspaceKind::Internal,
-                        external_regions: Vec::default(),
-                    })
-                    .await?;
-
-                ws_indexed.insert(ws.workspace.uuid, ws_login_info.endpoint);
-            }
-
-            let integrations = self
-                .list_integrations(&PartialIntegrationKey {
-                    social_id: Some(social_id.clone()),
-                    kind: Some(INTEGRATION_KIND.to_string()),
-                    workspace_uuid: None,
+        let mut ws_indexed = HashMap::new();
+        for ws in accountc.get_user_workspaces().await?.into_iter() {
+            let ws_login_info = accountc
+                .select_workspace(&SelectWorkspaceParams {
+                    workspace_url: ws.workspace.url,
+                    kind: WorkspaceKind::Internal,
+                    external_regions: Vec::default(),
                 })
-                .await
-                .unwrap()
-                .into_iter()
-                .filter(|i| i.workspace_uuid.is_some());
+                .await?;
 
-            let mut result = Vec::new();
+            ws_indexed.insert(ws.workspace.uuid, ws_login_info.endpoint);
+        }
 
-            for i in integrations {
-                let workspace = i.workspace_uuid.unwrap();
+        let integrations = self
+            .list_integrations(&PartialIntegrationKey {
+                social_id: Some(social_id.clone()),
+                kind: Some(INTEGRATION_KIND.to_string()),
+                workspace_uuid: None,
+            })
+            .await
+            .unwrap()
+            .into_iter()
+            .filter(|i| i.workspace_uuid.is_some());
 
-                if let Some(transactor_url) = ws_indexed.get(&workspace) {
+        let mut result = Vec::new();
+
+        for integration in integrations {
+            let workspace_id = integration.workspace_uuid.unwrap();
+
+            if let (Some(endpoint), Some(data)) = (ws_indexed.get(&workspace_id), integration.data)
+            {
+                if let Ok(data) = json::from_value::<IntegrationData>(data) {
                     result.push(WorkspaceIntegration {
-                        account,
-                        workspace,
-                        transactor_url: transactor_url.to_owned(),
-                        social_id: social_id.clone(),
+                        data,
+                        workspace_id,
+                        endpoint: endpoint.to_owned(),
                     });
+                } else {
+                    warn!(%workspace_id, "Cannot deserialize integration data");
                 }
             }
-
-            Ok(result)
-        } else {
-            Ok(Vec::default())
         }
+
+        Ok(result)
     }
 
     // finds or creates social id for the account, identified by claims
@@ -281,11 +331,19 @@ impl TelegramIntegration for AccountClient {
             .await?
             .is_none()
         {
+            let data = IntegrationData {
+                config: Config {
+                    auto_create: true,
+                    channels: Vec::default(),
+                },
+                mappings: Vec::default(),
+            };
+
             let workspace = Integration {
                 social_id: social_id.to_owned(),
                 kind: INTEGRATION_KIND.to_string(),
                 workspace_uuid: Some(workspace),
-                data: None,
+                data: Some(json::to_value(data)?),
             };
 
             self.create_integration(&workspace).await?;
