@@ -18,59 +18,19 @@ use serde::{Deserialize, Serialize};
 use serde_json as json;
 use tracing::*;
 
-use super::{context::SyncContext, media::MediaTransfer, tx::TransactorExt};
+use super::{
+    context::SyncContext,
+    media::MediaTransfer,
+    telegram::{ChatExt, MessageExt},
+    tx::TransactorExt,
+};
 use crate::{
     CONFIG,
     context::GlobalContext,
-    worker::{chat::ChatExt, sync::state::BlobDescriptor},
+    worker::sync::state::{BlobDescriptor, HulyMessage},
 };
 
 pub type MessageId = String;
-
-pub trait HulyMessageId {
-    fn huly_message_id(&self) -> MessageId;
-}
-
-impl HulyMessageId for Message {
-    fn huly_message_id(&self) -> MessageId {
-        self.id().to_string()
-    }
-}
-
-trait MessageExt {
-    fn ensure_person_request(&self) -> EnsurePersonRequest;
-}
-
-impl MessageExt for Message {
-    fn ensure_person_request(&self) -> EnsurePersonRequest {
-        fn names(chat: &Chat) -> (String, Option<String>) {
-            match chat {
-                Chat::User(user) => (
-                    user.first_name()
-                        .map(ToString::to_string)
-                        .unwrap_or("Deleted User".to_string()),
-                    user.last_name().map(ToOwned::to_owned),
-                ),
-
-                Chat::Channel(channel) => (channel.title().to_owned(), None),
-
-                Chat::Group(group) => (group.title().unwrap_or("Telegram Group").to_owned(), None),
-            }
-        }
-
-        let sender = self.sender().unwrap_or(self.chat());
-
-        let (first_name, last_name) = names(&sender);
-
-        EnsurePersonRequestBuilder::default()
-            .first_name(first_name)
-            .last_name(last_name)
-            .social_type(SocialIdType::Telegram)
-            .social_value(sender.id().to_string())
-            .build()
-            .unwrap()
-    }
-}
 
 #[derive(Clone)]
 pub(super) struct Exporter {
@@ -194,11 +154,11 @@ impl Exporter {
         card: &CardInfo,
         person_id: &String,
         message: &Message,
-    ) -> Result<String> {
+    ) -> Result<HulyMessage> {
         let dry_run = crate::config::CONFIG.dry_run;
 
         let create_message = async || -> Result<MessageId> {
-            let huly_message_id = message.huly_message_id();
+            let huly_message_id = message.as_huly_message().id;
 
             let create_event = CreateMessageEventBuilder::default()
                 .message_id(huly_message_id.clone())
@@ -225,7 +185,7 @@ impl Exporter {
             Ok(huly_message_id)
         };
 
-        let huly_message_id = if let Some(grouped_id) = message.grouped_id() {
+        let huly_id = if let Some(grouped_id) = message.grouped_id() {
             if let Some(root_message_id) = self.groups.get(&grouped_id) {
                 // the message is not first in the group, do update
                 if !message.markdown_text().is_empty() {
@@ -253,45 +213,33 @@ impl Exporter {
                 root_message_id.clone()
             } else {
                 // the message is first in the group
-                let huly_message_id = create_message().await?;
+                let huly_id = create_message().await?;
 
-                self.groups.insert(grouped_id, huly_message_id.clone());
+                self.groups.insert(grouped_id, huly_id.clone());
 
-                trace!(%huly_message_id, "Group message created");
+                trace!(%huly_id, "Group message created");
 
-                huly_message_id
+                huly_id
             }
         } else {
             // the message is not grouped
-            let huly_message_id = create_message().await?;
-            trace!(%huly_message_id, "Message created");
+            let huly_id = create_message().await?;
+            trace!(%huly_id, "Message created");
 
-            huly_message_id
+            huly_id
         };
 
         if let Some(media) = message.media() {
             match media {
                 Media::Photo(photo) => {
                     photo
-                        .transfer(
-                            self,
-                            message,
-                            card,
-                            huly_message_id.clone(),
-                            person_id.clone(),
-                        )
+                        .transfer(self, message, card, huly_id.clone(), person_id.clone())
                         .await?;
                 }
 
                 Media::Document(document) => {
                     document
-                        .transfer(
-                            self,
-                            message,
-                            card,
-                            huly_message_id.clone(),
-                            person_id.clone(),
-                        )
+                        .transfer(self, message, card, huly_id.clone(), person_id.clone())
                         .await?;
                 }
 
@@ -301,7 +249,7 @@ impl Exporter {
             }
         }
 
-        Ok(huly_message_id)
+        Ok(message.as_huly_message())
     }
 
     #[instrument(level = "trace", skip_all)]
@@ -309,16 +257,16 @@ impl Exporter {
         &mut self,
         card: &CardInfo,
         person_id: &PersonId,
-        huly_id: &String,
-        message: &Message,
-    ) -> Result<()> {
-        if !message.markdown_text().is_empty() {
+        huly_message: HulyMessage,
+        telegram_message: &Message,
+    ) -> Result<HulyMessage> {
+        if !telegram_message.markdown_text().is_empty() {
             let patch_event = UpdatePatchEventBuilder::default()
-                .message_id(huly_id)
-                .date(message.date())
+                .message_id(&huly_message.id)
+                .date(telegram_message.last_date())
                 .social_id(person_id)
                 .card_id(&card.card_id)
-                .content(message.markdown_text())
+                .content(telegram_message.markdown_text())
                 .build()
                 .unwrap();
 
@@ -334,7 +282,10 @@ impl Exporter {
             }
         }
 
-        Ok(())
+        Ok(HulyMessage {
+            date: telegram_message.last_date(),
+            ..huly_message
+        })
     }
 
     pub(super) async fn delete(&mut self, card: &CardInfo, huly_id: &String) -> Result<()> {

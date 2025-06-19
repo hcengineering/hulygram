@@ -5,9 +5,9 @@ use grammers_client::types::Chat;
 use hulyrs::services::{jwt::ClaimsBuilder, transactor::TransactorClient, types::WorkspaceUuid};
 
 use super::state::SyncState;
+use super::telegram::ChatExt;
 use crate::config::CONFIG;
 use crate::integration::WorkspaceIntegration;
-use crate::worker::chat::ChatExt;
 use crate::worker::context::WorkerContext;
 use crate::worker::sync::blob::BlobClient;
 

@@ -1,5 +1,4 @@
 mod auth;
-mod chat;
 mod config;
 mod context;
 pub mod limiters;

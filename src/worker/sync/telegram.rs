@@ -1,0 +1,107 @@
+use chrono::{DateTime, Utc};
+use grammers_client::types::{Chat, Message};
+use serde::{Deserialize, Serialize};
+
+use super::state::HulyMessage;
+use hulyrs::services::{
+    transactor::person::{EnsurePersonRequest, EnsurePersonRequestBuilder},
+    types::SocialIdType,
+};
+
+pub trait MessageExt {
+    fn last_date(&self) -> DateTime<Utc>;
+    fn ensure_person_request(&self) -> EnsurePersonRequest;
+    fn as_huly_message(&self) -> HulyMessage;
+}
+
+impl MessageExt for Message {
+    fn ensure_person_request(&self) -> EnsurePersonRequest {
+        fn names(chat: &Chat) -> (String, Option<String>) {
+            match chat {
+                Chat::User(user) => (
+                    user.first_name()
+                        .map(ToString::to_string)
+                        .unwrap_or("Deleted User".to_string()),
+                    user.last_name().map(ToOwned::to_owned),
+                ),
+
+                Chat::Channel(channel) => (channel.title().to_owned(), None),
+
+                Chat::Group(group) => (group.title().unwrap_or("Telegram Group").to_owned(), None),
+            }
+        }
+
+        let sender = self.sender().unwrap_or(self.chat());
+
+        let (first_name, last_name) = names(&sender);
+
+        EnsurePersonRequestBuilder::default()
+            .first_name(first_name)
+            .last_name(last_name)
+            .social_type(SocialIdType::Telegram)
+            .social_value(sender.id().to_string())
+            .build()
+            .unwrap()
+    }
+
+    fn last_date(&self) -> DateTime<Utc> {
+        self.edit_date().unwrap_or_else(|| self.date())
+    }
+
+    fn as_huly_message(&self) -> HulyMessage {
+        HulyMessage {
+            id: self.id().to_string(),
+            date: self.last_date(),
+        }
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize, Copy, Clone)]
+pub enum DialogType {
+    User,
+    Group,
+    Channel,
+}
+
+pub trait ChatExt {
+    fn is_deleted(&self) -> bool;
+    fn global_id(&self) -> String;
+    fn r#type(&self) -> DialogType;
+    fn card_title(&self) -> String;
+}
+
+impl ChatExt for Chat {
+    fn is_deleted(&self) -> bool {
+        if let Chat::User(user) = self {
+            return user.deleted();
+        } else {
+            false
+        }
+    }
+
+    fn r#type(&self) -> DialogType {
+        match self {
+            Chat::User(_) => DialogType::User,
+            Chat::Group(_) => DialogType::Group,
+            Chat::Channel(_) => DialogType::Channel,
+        }
+    }
+
+    fn card_title(&self) -> String {
+        match self {
+            Chat::User(user) => user.full_name().clone(),
+            Chat::Group(group) => group.title().unwrap_or("Unknown Group").to_owned(),
+            Chat::Channel(channel) => channel.title().to_owned(),
+        }
+    }
+
+    fn global_id(&self) -> String {
+        match self {
+            Chat::User(user) => format!("u{}", user.id()),
+            Chat::Group(group) => {
+                format!("g{}", group.id())
+            }
+            Chat::Channel(channel) => format!("c{}", channel.id()),
+        }
+    }
+}

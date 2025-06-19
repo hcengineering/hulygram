@@ -17,8 +17,9 @@ use super::{
     context::SyncContext,
     export::{CardInfo, Exporter},
     state::{Progress, SyncState},
+    telegram::{ChatExt, MessageExt},
 };
-use crate::{integration::TelegramIntegration, worker::chat::ChatExt};
+use crate::integration::TelegramIntegration;
 
 struct SyncChat {
     sender_realtime: mpsc::Sender<Arc<ImporterEvent>>,
@@ -97,13 +98,20 @@ impl SyncChat {
 
                         match state.get_h_message(telegram_id).await? {
                             None => {
-                                let huly_id =
+                                let huly_message =
                                     exporter.new_message(&card, &person_id, &message).await?;
 
-                                state.set_t_message(telegram_id, huly_id).await?;
+                                state.set_t_message(telegram_id, huly_message).await?;
                             }
-                            Some(huly_id) => {
-                                exporter.edit(&card, &person_id, &huly_id, message).await?;
+
+                            Some(huly_message) if message.last_date() > huly_message.date => {
+                                exporter
+                                    .edit(&card, &person_id, huly_message, message)
+                                    .await?;
+                            }
+
+                            Some(_) => {
+                                //
                             }
                         }
 
@@ -136,11 +144,14 @@ impl SyncChat {
                         let span = span!(Level::TRACE, "MessageEdited", telegram_id);
                         let _enter = span.enter();
 
-                        if let Some(huly_id) = state.get_h_message(message.id()).await? {
+                        if let Some(huly_message) = state.get_h_message(message.id()).await? {
                             let person_id = exporter.ensure_person(message).await?;
 
-                            exporter.edit(&card, &person_id, &huly_id, message).await?;
-                            state.set_t_message(telegram_id, huly_id).await?;
+                            let huly_message = exporter
+                                .edit(&card, &person_id, huly_message, message)
+                                .await?;
+
+                            state.set_t_message(telegram_id, huly_message).await?;
                         }
                     }
 
@@ -149,8 +160,8 @@ impl SyncChat {
                         let _enter = span.enter();
 
                         for message in messages {
-                            if let Some(huly_id) = state.get_h_message(*message).await? {
-                                exporter.delete(&card, &huly_id).await?;
+                            if let Some(huly_message) = state.get_h_message(*message).await? {
+                                exporter.delete(&card, &huly_message.id).await?;
                             }
                         }
                     }

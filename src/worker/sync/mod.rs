@@ -6,3 +6,4 @@ pub mod state;
 mod sync;
 mod tx;
 pub use sync::Sync;
+mod telegram;

@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use anyhow::Result;
+use chrono::{DateTime, Utc};
 use redis::{AsyncCommands, FromRedisValue, ToRedisArgs, aio::ConnectionManager};
 use serde::{Deserialize, Serialize};
 use serde_json as json;
@@ -16,6 +17,12 @@ pub enum Progress {
     Unsynced,
     Progress(i32),
     Complete,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq, Default)]
+pub struct HulyMessage {
+    pub id: String,
+    pub date: DateTime<Utc>,
 }
 
 pub struct SyncState {
@@ -58,13 +65,17 @@ impl SyncState {
         Ok(())
     }
 
-    pub async fn set_t_message(&self, telegram_id: i32, huly_id: String) -> Result<()> {
-        self.hset("tmessages", telegram_id, huly_id).await
+    pub async fn set_t_message(&self, telegram_id: i32, message: HulyMessage) -> Result<()> {
+        self.hset("tmessages", telegram_id, json::to_vec(&message)?)
+            .await
     }
 
     // huly by telegram
-    pub async fn get_h_message(&self, telegram_id: i32) -> Result<Option<String>> {
-        self.hget("tmessages", telegram_id).await
+    pub async fn get_h_message(&self, telegram_id: i32) -> Result<Option<HulyMessage>> {
+        Ok(self
+            .hget::<_, Option<Vec<u8>>>("tmessages", telegram_id)
+            .await?
+            .and_then(|bytes| json::from_slice(&bytes).ok()))
     }
 
     pub async fn set_progress(&self, progress: Progress) -> Result<()> {
