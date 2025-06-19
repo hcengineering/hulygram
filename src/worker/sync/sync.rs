@@ -6,7 +6,7 @@ use grammers_client::types::Message;
 use multimap::MultiMap;
 use tokio::{
     self,
-    sync::{Mutex, mpsc},
+    sync::{Mutex, Semaphore, mpsc},
     task::{Builder as TaskBuilder, JoinHandle},
     time::{self, Duration},
 };
@@ -19,7 +19,7 @@ use super::{
     state::{Progress, SyncState},
     telegram::{ChatExt, MessageExt},
 };
-use crate::integration::TelegramIntegration;
+use crate::{config::CONFIG, integration::TelegramIntegration};
 
 struct SyncChat {
     sender_realtime: mpsc::Sender<Arc<ImporterEvent>>,
@@ -377,11 +377,13 @@ impl Sync {
             .map(|(_, sync)| sync.clone())
             .collect::<Vec<_>>();
 
-        let semaphore = self.context.global.limiters().sync_semaphore.clone();
+        let global_semaphore = self.context.global.limiters().sync_semaphore.clone();
 
         let cleanup = self.cleanup.clone();
 
         let task = async move {
+            let local_semaphore = Arc::new(Semaphore::new(CONFIG.sync_process_limit_local));
+
             for sync in syncs {
                 match sync.context.state.get_progress().await {
                     Ok(Progress::Complete) => {
@@ -393,17 +395,21 @@ impl Sync {
 
                         let id = IDS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
 
-                        let permit = semaphore.clone().acquire_owned().await.unwrap();
+                        let local_permit = local_semaphore.clone().acquire_owned().await.unwrap();
+                        let global_permit = global_semaphore.clone().acquire_owned().await.unwrap();
+
                         trace!(
                             id,
-                            permits = semaphore.available_permits(),
+                            permits = global_semaphore.available_permits(),
                             "Backfill permit acquired"
                         );
 
                         let sync = TaskBuilder::new().name(&format!("backfill-{}", id)).spawn(
                             async move {
                                 sync.backfill(id, progress).await;
-                                drop(permit);
+
+                                drop(local_permit);
+                                drop(global_permit);
                             },
                         );
 

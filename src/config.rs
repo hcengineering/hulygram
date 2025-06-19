@@ -46,6 +46,8 @@ pub struct Config {
 
     pub sync_process_limit: usize,
 
+    pub sync_process_limit_local: usize,
+
     pub blob_service_path: Url,
 
     pub base_url: Url,
