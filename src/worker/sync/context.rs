@@ -28,15 +28,14 @@ impl Display for SyncId {
     }
 }
 
-#[derive(Clone)]
 pub struct SyncContext {
     pub chat: Arc<Chat>,
-    pub transactor: Arc<TransactorClient>,
+    pub transactor: TransactorClient,
     pub worker: Arc<WorkerContext>,
     pub workspace_id: WorkspaceUuid,
-    pub state: Arc<SyncState>,
+    pub state: SyncState,
     pub sync_id: SyncId,
-    pub blobs: Arc<BlobClient>,
+    pub blobs: BlobClient,
 }
 
 use crate::config::hulyrs::SERVICES;
@@ -63,17 +62,17 @@ impl SyncContext {
             chat_id: chat.global_id(),
         };
 
-        let index = Arc::new(SyncState::new(sync_id.clone(), worker.global.clone()).await?);
+        let state = SyncState::new(sync_id.clone(), worker.global.clone()).await?;
 
-        let blobs = Arc::new(BlobClient::new(workspace_id)?);
+        let blobs = BlobClient::new(workspace_id)?;
 
         Ok(Self {
             sync_id,
-            transactor: Arc::new(transactor),
+            transactor,
             chat,
             worker,
             workspace_id,
-            state: index,
+            state,
             blobs,
         })
     }
