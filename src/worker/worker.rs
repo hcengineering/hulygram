@@ -191,10 +191,7 @@ impl Worker {
         let phone = &self.config.phone;
 
         let mut state = match self.auth_init().await {
-            Ok(state) => {
-                self.persist_session().await?;
-                state
-            }
+            Ok(state) => state,
             Err(error) => {
                 error!(%phone, %error, "Authorization failed");
                 return Ok(ExitReason::NotAuthorized);
@@ -231,8 +228,6 @@ impl Worker {
                         warn!(%phone, endpoint=%register.token, %error, "Push endpoint registration failed");
                     }
                 }
-
-                self.persist_session().await?;
 
                 self.sync.spawn().await?;
 
