@@ -2,7 +2,10 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use chrono::{DateTime, Utc};
-use redis::{AsyncCommands, FromRedisValue, ToRedisArgs, aio::ConnectionManager};
+use redis::{
+    AsyncCommands, FromRedisValue, ToRedisArgs,
+    aio::{ConnectionManager, MultiplexedConnection},
+};
 use serde::{Deserialize, Serialize};
 use serde_json as json;
 use uuid::Uuid;
@@ -27,7 +30,7 @@ pub struct HulyMessage {
 
 pub struct SyncState {
     prefix: String,
-    redis: ConnectionManager,
+    redis: MultiplexedConnection,
 }
 
 impl SyncState {

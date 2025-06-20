@@ -4,8 +4,8 @@ use hulyrs::services::{
     transactor::event::kafka::KafkaEventPublisher,
 };
 use redis::{
-    ConnectionInfo, RedisConnectionInfo,
-    aio::{ConnectionManager, ConnectionManagerConfig},
+    ConnectionInfo, ConnectionLike, RedisConnectionInfo,
+    aio::{ConnectionManager, ConnectionManagerConfig, MultiplexedConnection},
 };
 
 use crate::config::CONFIG;
@@ -18,14 +18,27 @@ pub struct GlobalContext {
     account: AccountClient,
     hulygun: KafkaEventPublisher,
     limiters: Limiters,
-    redis: ConnectionManager,
+    redis: MultiplexedConnection,
 }
 
 impl GlobalContext {
     pub async fn new(claims: Claims) -> Result<Self> {
         #[cfg(feature = "redis-sentinel")]
         let redis = {
-            unimplemented!("sentinel mode is not implemented yet");
+            use redis::{sentinel::SentinelClient, sentinel::SentinelNodeConnectionInfo};
+
+            let mut sentinel = SentinelClient::build(
+                CONFIG.redis_urls.as_slice().into(),
+                String::from("mymaster"),
+                Some(SentinelNodeConnectionInfo {
+                    tls_mode: Some(redis::TlsMode::Insecure),
+                    redis_connection_info: None,
+                }),
+                redis::sentinel::SentinelServerType::Master,
+            )
+            .unwrap();
+
+            sentinel.get_async_connection().await.unwrap()
         };
 
         #[cfg(not(feature = "redis-sentinel"))]
@@ -37,7 +50,7 @@ impl GlobalContext {
                         single.port().unwrap_or(6379),
                     ),
                     redis: RedisConnectionInfo {
-                        db: 0,
+                        db: 10,
                         username: None,
                         password: Some(CONFIG.redis_password.to_owned()),
                         protocol: redis::ProtocolVersion::RESP3,
@@ -46,14 +59,11 @@ impl GlobalContext {
 
                 let client = redis::Client::open(connection_info)?;
 
-                let config = ConnectionManagerConfig::default();
-                let config = config.set_number_of_retries(1);
-
-                ConnectionManager::new_with_config(client, config).await?
+                client.get_multiplexed_async_connection().await?
             }
 
             _ => {
-                bail!("Multiple redis urls are not supported in non sentinel mode");
+                bail!("Multiple redis url's are not supported in non sentinel mode");
             }
         };
 
@@ -82,7 +92,7 @@ impl GlobalContext {
         &self.limiters
     }
 
-    pub fn redis(&self) -> ConnectionManager {
+    pub fn redis(&self) -> MultiplexedConnection {
         self.redis.clone()
     }
 }

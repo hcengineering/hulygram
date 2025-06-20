@@ -57,3 +57,4 @@ redis = { version = "0.32.0", features = ["tokio-comp", "connection-manager"] }
 
 [features]
 redis-sentinel = ["redis/sentinel"]
+dummy = []
