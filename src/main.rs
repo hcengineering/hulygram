@@ -32,6 +32,7 @@ pub fn initialize_tracing() {
         let level = config::hulyrs::CONFIG.log;
 
         let filter = Targets::default()
+            .with_default(tracing::Level::WARN)
             .with_target(env!("CARGO_PKG_NAME"), level)
             .with_target("grammers", tracing::Level::INFO)
             //.with_target("tokio", tracing::Level::TRACE)
