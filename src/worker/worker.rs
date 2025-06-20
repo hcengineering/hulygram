@@ -101,8 +101,9 @@ pub struct Worker {
     pub config: Arc<WorkerConfig>,
     pub client: Client,
     session_key: String,
-    sync: Sync,
-    context: Arc<WorkerContext>,
+    sync: Option<Sync>,
+    context: Option<Arc<WorkerContext>>,
+    global_context: Arc<GlobalContext>,
 }
 
 pub enum ExitReason {
@@ -113,7 +114,7 @@ pub enum ExitReason {
 }
 
 impl Worker {
-    pub async fn new(context: Arc<GlobalContext>, config: WorkerConfig) -> Result<Self> {
+    pub async fn new(global_context: Arc<GlobalContext>, config: WorkerConfig) -> Result<Self> {
         let config = Arc::new(config);
 
         let phone = &config.phone;
@@ -124,7 +125,7 @@ impl Worker {
 
         let session_key = format!("ses_{}", phone);
 
-        let session = if let Some(session) = context.kvs().get(&session_key).await? {
+        let session = if let Some(session) = global_context.kvs().get(&session_key).await? {
             trace!(%phone, "Persisted session found");
             Session::load(session.as_slice())?
         } else {
@@ -142,23 +143,22 @@ impl Worker {
 
         trace!(%phone, %config.id, "Connected");
 
-        let context = Arc::new(WorkerContext::new(context, client.clone()).await?);
-
-        let sync = Sync::new(context.clone());
-
         Ok(Self {
             id: config.id.clone(),
             config,
             client,
             session_key,
-            sync,
-            context,
+            sync: None,
+            context: None,
+            global_context,
         })
     }
 
     async fn persist_session(&self) -> Result<()> {
         Ok(self
             .context
+            .as_ref()
+            .expect("context is not set")
             .global
             .kvs()
             .upsert(&self.session_key, &self.client.session().save())
@@ -182,7 +182,9 @@ impl Worker {
             let _ = self.persist_session().await;
         }
 
-        self.sync.abort().await;
+        if let Some(sync) = self.sync.take() {
+            sync.abort().await;
+        }
 
         result.unwrap_or_else(ExitReason::Error)
     }
@@ -205,6 +207,16 @@ impl Worker {
 
         loop {
             if matches!(state, WorkerState::Authorized(_)) && !startup_complete {
+                let context = Arc::new(
+                    WorkerContext::new(self.global_context.clone(), self.client.clone()).await?,
+                );
+
+                let mut sync = Sync::new(context.clone());
+                sync.spawn().await?;
+
+                self.sync = Some(sync);
+                self.context = Some(context);
+
                 let token = CONFIG.base_url.join("/push/")?.join(phone)?.to_string();
 
                 let register = RegisterDevice {
@@ -229,7 +241,7 @@ impl Worker {
                     }
                 }
 
-                self.sync.spawn().await?;
+                self.persist_session().await?;
 
                 startup_complete = true;
             }
@@ -292,7 +304,7 @@ impl Worker {
                 update = self.client.next_update() => {
                     match update {
                         Ok(update) => {
-                            self.sync.handle_update(update).await?;
+                            self.sync.as_mut().expect("sync is not set").handle_update(update).await?;
                         }
 
                         Err(error) => {
