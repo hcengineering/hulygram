@@ -50,12 +50,14 @@ async fn interceptor(
     let claims = request
         .extract_claims(crate::config::hulyrs::CONFIG.token_secret.as_ref().unwrap())?
         .to_owned();
-    request.extensions_mut().insert(claims.clone());
+
+    request.extensions_mut().insert(claims);
+
     next.call(request).await
 }
 
 pub fn spawn(
-    supervisor: Supervisor,
+    supervisor: Arc<Supervisor>,
     services: Arc<GlobalContext>,
 ) -> anyhow::Result<(JoinHandle<Result<(), std::io::Error>>, ServerHandle)> {
     let socket = std::net::SocketAddr::new(CONFIG.bind_host.as_str().parse()?, CONFIG.bind_port);
@@ -184,11 +186,9 @@ enum Command {
 
 async fn enumerate(
     request: HttpRequest,
-    services: Data<GlobalContext>,
-    supervisor: Data<Supervisor>,
+    services: Data<Arc<GlobalContext>>,
+    supervisor: Data<Arc<Supervisor>>,
 ) -> HandlerResult<Json<Vec<Integration>>> {
-    trace!("Enumerate request");
-
     let services = services.to_owned();
 
     let mut integrations = Vec::new();
@@ -225,8 +225,8 @@ async fn enumerate(
 async fn get(
     request: HttpRequest,
     phone: Path<String>,
-    services: Data<GlobalContext>,
-    supervisor: Data<Supervisor>,
+    services: Data<Arc<GlobalContext>>,
+    supervisor: Data<Arc<Supervisor>>,
 ) -> HandlerResult<HttpResponse> {
     let phone = normalize_phone_number(&phone)?;
     let services = services.to_owned();
@@ -265,8 +265,8 @@ async fn get(
 async fn command(
     request: HttpRequest,
     phone: Path<String>,
-    services: Data<GlobalContext>,
-    supervisor: Data<Supervisor>,
+    services: Data<Arc<GlobalContext>>,
+    supervisor: Data<Arc<Supervisor>>,
     command: Json<Command>,
 ) -> HandlerResult<HttpResponse> {
     let phone = normalize_phone_number(&phone)?;
