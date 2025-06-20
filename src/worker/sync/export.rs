@@ -2,16 +2,16 @@ use std::{collections::HashMap, sync::Arc};
 
 use anyhow::{Result, anyhow};
 use chrono::{DateTime, Utc};
-use grammers_client::types::{Chat, Media, Message};
+use grammers_client::types::{Media, Message};
 use hulyrs::services::{
     transactor::{
         event::{
             BlobDataBuilder, BlobPatchEventBuilder, BlobPatchOperation, CreateMessageEventBuilder,
             MessageRequestType, MessageType, RemovePatchEventBuilder, UpdatePatchEventBuilder,
         },
-        person::{EnsurePerson, EnsurePersonRequest, EnsurePersonRequestBuilder},
+        person::EnsurePerson,
     },
-    types::{PersonId, SocialIdType},
+    types::PersonId,
 };
 use redis::AsyncCommands;
 use serde::{Deserialize, Serialize};
@@ -37,7 +37,6 @@ pub(super) struct Exporter {
     global_context: Arc<GlobalContext>,
     pub context: Arc<SyncContext>,
     groups: HashMap<i64, MessageId>,
-    social_ids: HashMap<String, PersonId>,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -55,7 +54,6 @@ impl Exporter {
             global_context,
             context,
             groups: HashMap::new(),
-            social_ids: HashMap::new(),
         };
 
         Ok(exporter)
@@ -135,14 +133,20 @@ impl Exporter {
     pub async fn ensure_person(&mut self, message: &Message) -> Result<PersonId> {
         let request = message.ensure_person_request();
 
-        if let Some(person_id) = self.social_ids.get(&request.social_value) {
+        let mut redis = self.global_context.redis();
+
+        if let Some(person_id) = redis
+            .hget::<_, _, Option<PersonId>>("socialid", &request.social_value)
+            .await?
+        {
             return Ok(person_id.clone());
         } else {
             trace!(social_value = request.social_value, "CacheMiss");
             let ensured = self.context.transactor().ensure_person(&request).await?;
 
-            self.social_ids
-                .insert(request.social_value, ensured.social_id.clone());
+            let _: () = redis
+                .hset("socialid", &request.social_value, &ensured.social_id)
+                .await?;
 
             return Ok(ensured.social_id);
         }
