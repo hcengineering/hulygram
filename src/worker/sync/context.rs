@@ -20,6 +20,7 @@ pub struct SyncInfo {
     pub huly_workspace_id: WorkspaceUuid,
 
     pub telegram_user_id: i64,
+    pub telegram_phone_number: Option<String>,
     pub telegram_chat_id: String,
 
     pub huly_card_id: String,
@@ -73,6 +74,7 @@ impl SyncContext {
                 let info = SyncInfo {
                     telegram_user_id: worker.me.id(),
                     telegram_chat_id: chat.global_id(),
+                    telegram_phone_number: worker.me.phone().map(ToOwned::to_owned),
 
                     huly_workspace_id,
                     huly_card_id: ksuid::Ksuid::generate().to_base62(),
