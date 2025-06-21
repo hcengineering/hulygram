@@ -2,15 +2,12 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use chrono::{DateTime, Utc};
-use redis::{
-    AsyncCommands, FromRedisValue, ToRedisArgs,
-    aio::{ConnectionManager, MultiplexedConnection},
-};
+use redis::{AsyncCommands, FromRedisValue, ToRedisArgs, aio::MultiplexedConnection};
 use serde::{Deserialize, Serialize};
 use serde_json as json;
 use uuid::Uuid;
 
-use crate::{context::GlobalContext, worker::sync::context::SyncId};
+use crate::{context::GlobalContext, worker::sync::context::SyncInfo};
 
 #[derive(
     Debug, Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Default, derive_more::IsVariant,
@@ -29,17 +26,28 @@ pub struct HulyMessage {
 }
 
 pub struct SyncState {
-    prefix: String,
+    info: SyncInfo,
     redis: MultiplexedConnection,
 }
 
-impl SyncState {
-    pub async fn new(sync_id: SyncId, context: Arc<GlobalContext>) -> Result<Self> {
-        let prefix = sync_id.to_string();
+trait KeyPrefixes {
+    fn base_prefix(&self) -> String;
+}
 
+impl KeyPrefixes for SyncInfo {
+    fn base_prefix(&self) -> String {
+        format!(
+            "{}:t{}:{}",
+            self.huly_workspace_id, self.telegram_user_id, self.telegram_chat_id
+        )
+    }
+}
+
+impl SyncState {
+    pub async fn new(info: SyncInfo, context: Arc<GlobalContext>) -> Result<Self> {
         Ok(Self {
             redis: context.redis(),
-            prefix,
+            info,
         })
     }
 
@@ -49,7 +57,7 @@ impl SyncState {
         hkey: K,
     ) -> Result<V> {
         let mut redis = self.redis.clone();
-        let key = format!("{}.{}", self.prefix, suffix);
+        let key = format!("{}.{}", self.info.base_prefix(), suffix);
 
         Ok(redis.hget::<_, K, V>(&key, hkey).await?)
     }
@@ -61,7 +69,7 @@ impl SyncState {
         value: V,
     ) -> Result<()> {
         let mut redis = self.redis.clone();
-        let key = format!("{}.{}", self.prefix, suffix);
+        let key = format!("{}.{}", self.info.base_prefix(), suffix);
 
         let _: () = redis.hset(key, hkey, value).await?;
 
@@ -83,7 +91,7 @@ impl SyncState {
 
     pub async fn set_progress(&self, progress: Progress) -> Result<()> {
         let mut redis = self.redis.clone();
-        let key = format!("{}.progress", self.prefix);
+        let key = format!("{}.progress", self.info.base_prefix());
 
         let _: () = redis.set(&key, json::to_vec(&progress)?).await?;
 
@@ -92,7 +100,7 @@ impl SyncState {
 
     pub async fn get_progress(&self) -> Result<Progress> {
         let mut redis = self.redis.clone();
-        let key = format!("{}.progress", self.prefix);
+        let key = format!("{}.progress", self.info.base_prefix());
 
         Ok(redis
             .get::<_, Option<Vec<u8>>>(&key)

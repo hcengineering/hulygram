@@ -14,16 +14,9 @@ use hulyrs::services::{
     types::PersonId,
 };
 use redis::AsyncCommands;
-use serde::{Deserialize, Serialize};
-use serde_json as json;
 use tracing::*;
 
-use super::{
-    context::SyncContext,
-    media::MediaTransfer,
-    telegram::{ChatExt, MessageExt},
-    tx::TransactorExt,
-};
+use super::{context::SyncContext, media::MediaTransfer, telegram::MessageExt, tx::TransactorExt};
 use crate::{
     CONFIG,
     context::GlobalContext,
@@ -39,14 +32,14 @@ pub(super) struct Exporter {
     groups: HashMap<i64, MessageId>,
 }
 
-#[derive(Deserialize, Serialize)]
-pub struct CardInfo {
-    space_id: String,
-    card_id: String,
+pub enum CardState {
+    Exists,
+    Created,
+    NotExists,
 }
 
 impl Exporter {
-    #[instrument(level = "trace", skip_all, fields(chat = %context.chat.id(), user = %context.worker.me.id(), account = %context.worker.account_id, workspace = %context.workspace_id))]
+    #[instrument(level = "trace", skip_all, fields(chat = %context.chat.id(), user = %context.worker.me.id(), account = %context.worker.account_id, workspace = %context.info.huly_workspace_id))]
     pub(super) async fn new(context: Arc<SyncContext>) -> Result<Self> {
         let global_context = context.worker.global.clone();
 
@@ -60,28 +53,15 @@ impl Exporter {
     }
 
     #[instrument(level = "trace", skip_all)]
-    pub async fn ensure_card(&mut self) -> Result<Option<CardInfo>> {
-        let chat = &self.context.chat;
+    pub async fn ensure_card(&mut self, is_fresh: bool) -> Result<CardState> {
         let tx = self.context.transactor();
-        let mut redis = self.global_context.redis();
-        let key = format!("{}.card", self.context.sync_id);
+        let info = &self.context.info;
 
-        let card = match redis.get::<_, Option<Vec<u8>>>(&key).await? {
-            Some(card) => {
-                let card = json::from_slice::<CardInfo>(&card)?;
-
-                if tx.find_channel(&card.card_id).await? {
-                    Some(card)
-                } else {
-                    None
-                }
-            }
-            None => {
-                let card_title = chat.card_title();
-                let is_private = !CONFIG.allowed_dialog_ids.contains(&chat.id().to_string());
-                let card_id = ksuid::Ksuid::generate().to_base62();
-
-                let space_id = if is_private {
+        let ensured = if tx.find_channel(&self.context.info.huly_card_id).await? {
+            CardState::Exists
+        } else {
+            if is_fresh {
+                let space_id = if info.is_private {
                     let person_id = tx
                         .find_person(self.context.worker.account_id)
                         .await?
@@ -95,38 +75,26 @@ impl Exporter {
                         anyhow!("NoPersonSpace")
                     })?;
 
-                    tx.create_channel(
-                        &card_id,
-                        &self.context.worker.social_id,
-                        &space_id,
-                        &card_title,
-                    )
-                    .await?;
-
                     space_id
                 } else {
-                    let space = "card:space:Default".to_owned();
-
-                    tx.create_channel(
-                        &card_id,
-                        &self.context.worker.social_id,
-                        &space,
-                        &card_title,
-                    )
-                    .await?;
-
-                    space
+                    "card:space:Default".to_owned()
                 };
 
-                let card = CardInfo { space_id, card_id };
+                tx.create_channel(
+                    &info.huly_card_id,
+                    &self.context.worker.social_id,
+                    &space_id,
+                    &info.huly_card_title,
+                )
+                .await?;
 
-                let _: () = redis.set(&key, &json::to_vec(&card)?).await?;
-
-                Some(card)
+                CardState::Created
+            } else {
+                CardState::NotExists
             }
         };
 
-        Ok(card)
+        Ok(ensured)
     }
 
     #[instrument(level = "trace", skip_all)]
@@ -155,10 +123,13 @@ impl Exporter {
     #[instrument(level = "trace", skip_all)]
     pub async fn new_message(
         &mut self,
-        card: &CardInfo,
+        //card: &CardInfo,
         person_id: &String,
         message: &Message,
     ) -> Result<HulyMessage> {
+        let info = &self.context.info;
+        let workspace_id = info.huly_workspace_id;
+
         let dry_run = crate::config::CONFIG.dry_run;
 
         let create_message = async || -> Result<MessageId> {
@@ -167,7 +138,7 @@ impl Exporter {
             let create_event = CreateMessageEventBuilder::default()
                 .message_id(huly_message_id.clone())
                 .message_type(MessageType::Message)
-                .card_id(card.card_id.clone())
+                .card_id(info.huly_card_id.clone())
                 .card_type("chat:masterTag:Channel")
                 .content(message.markdown_text())
                 .social_id(person_id)
@@ -179,7 +150,7 @@ impl Exporter {
                 self.global_context
                     .hulygun()
                     .request(
-                        self.context.workspace_id,
+                        workspace_id,
                         MessageRequestType::CreateMessage,
                         create_event,
                     )
@@ -197,7 +168,7 @@ impl Exporter {
                         .message_id(root_message_id.to_string())
                         .date(message.date())
                         .social_id(person_id)
-                        .card_id(card.card_id.clone())
+                        .card_id(&info.huly_card_id)
                         .content(message.markdown_text())
                         .build()
                         .unwrap();
@@ -205,11 +176,7 @@ impl Exporter {
                     if !dry_run {
                         self.global_context
                             .hulygun()
-                            .request(
-                                self.context.workspace_id,
-                                MessageRequestType::UpdatePatch,
-                                patch_event,
-                            )
+                            .request(workspace_id, MessageRequestType::UpdatePatch, patch_event)
                             .await?;
                     }
                 }
@@ -237,13 +204,13 @@ impl Exporter {
             match media {
                 Media::Photo(photo) => {
                     photo
-                        .transfer(self, message, card, huly_id.clone(), person_id.clone())
+                        .transfer(self, message, huly_id.clone(), person_id.clone())
                         .await?;
                 }
 
                 Media::Document(document) => {
                     document
-                        .transfer(self, message, card, huly_id.clone(), person_id.clone())
+                        .transfer(self, message, huly_id.clone(), person_id.clone())
                         .await?;
                 }
 
@@ -259,7 +226,6 @@ impl Exporter {
     #[instrument(level = "trace", skip_all)]
     pub async fn edit(
         &mut self,
-        card: &CardInfo,
         person_id: &PersonId,
         huly_message: HulyMessage,
         telegram_message: &Message,
@@ -269,7 +235,7 @@ impl Exporter {
                 .message_id(&huly_message.id)
                 .date(telegram_message.last_date())
                 .social_id(person_id)
-                .card_id(&card.card_id)
+                .card_id(&self.context.info.huly_card_id)
                 .content(telegram_message.markdown_text())
                 .build()
                 .unwrap();
@@ -278,7 +244,7 @@ impl Exporter {
                 self.global_context
                     .hulygun()
                     .request(
-                        self.context.workspace_id,
+                        self.context.info.huly_workspace_id,
                         MessageRequestType::UpdatePatch,
                         patch_event,
                     )
@@ -292,9 +258,9 @@ impl Exporter {
         })
     }
 
-    pub(super) async fn delete(&mut self, card: &CardInfo, huly_id: &String) -> Result<()> {
+    pub(super) async fn delete(&mut self, huly_id: &String) -> Result<()> {
         let patch = RemovePatchEventBuilder::default()
-            .card_id(&card.card_id)
+            .card_id(&self.context.info.huly_card_id)
             .message_id(huly_id)
             .social_id(&self.context.worker.social_id)
             .date(Utc::now())
@@ -305,7 +271,7 @@ impl Exporter {
             self.global_context
                 .hulygun()
                 .request(
-                    self.context.workspace_id,
+                    self.context.info.huly_workspace_id,
                     MessageRequestType::RemovePatch,
                     patch,
                 )
@@ -318,12 +284,13 @@ impl Exporter {
     pub async fn attach(
         &self,
         blob: BlobDescriptor,
-        card: &CardInfo,
+        //  info: &SyncInfo,
         message_id: MessageId,
         social_id: PersonId,
         date: DateTime<Utc>,
     ) -> Result<()> {
         let mut blob_data = BlobDataBuilder::default();
+        let info = &self.context.info;
 
         blob_data
             .blob_id(blob.blob_id.to_string())
@@ -347,7 +314,7 @@ impl Exporter {
         let blob_data = blob_data.build()?;
 
         let attach_event = BlobPatchEventBuilder::default()
-            .card_id(&card.card_id)
+            .card_id(&info.huly_card_id)
             .message_id(message_id)
             .date(date)
             .social_id(social_id)
@@ -362,7 +329,7 @@ impl Exporter {
                 .global
                 .hulygun()
                 .request(
-                    self.context.workspace_id,
+                    self.context.info.huly_workspace_id,
                     MessageRequestType::BlobPatch,
                     attach_event,
                 )

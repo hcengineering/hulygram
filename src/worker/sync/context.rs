@@ -1,44 +1,48 @@
-use std::fmt::Display;
 use std::sync::Arc;
 
+use anyhow::Result;
 use grammers_client::types::Chat;
 use hulyrs::services::{jwt::ClaimsBuilder, transactor::TransactorClient, types::WorkspaceUuid};
+use redis::AsyncCommands;
+use serde::{Deserialize, Serialize};
+use serde_json as json;
 
 use super::state::SyncState;
 use super::telegram::ChatExt;
 use crate::config::CONFIG;
+use crate::config::hulyrs::SERVICES;
 use crate::integration::WorkspaceIntegration;
 use crate::worker::context::WorkerContext;
 use crate::worker::sync::blob::BlobClient;
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct SyncId {
-    workspace_id: WorkspaceUuid,
-    telegram_user_id: i64,
-    chat_id: String,
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SyncInfo {
+    pub huly_workspace_id: WorkspaceUuid,
+
+    pub telegram_user_id: i64,
+    pub telegram_chat_id: String,
+
+    pub huly_card_id: String,
+    pub huly_card_title: String,
+
+    pub is_private: bool,
 }
 
-impl Display for SyncId {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "{}:{}:{}",
-            self.workspace_id, self.telegram_user_id, self.chat_id
-        )
-    }
+fn sync_key(workspace: WorkspaceUuid, user: i64, chat: &String) -> String {
+    format!("{workspace}:t{user}:{chat}.sync")
 }
 
 pub struct SyncContext {
-    pub chat: Arc<Chat>,
-    pub transactor: TransactorClient,
     pub worker: Arc<WorkerContext>,
-    pub workspace_id: WorkspaceUuid,
-    pub state: SyncState,
-    pub sync_id: SyncId,
-    pub blobs: BlobClient,
-}
 
-use crate::config::hulyrs::SERVICES;
+    pub transactor: TransactorClient,
+    pub blobs: BlobClient,
+
+    pub info: SyncInfo,
+    pub state: SyncState,
+    pub chat: Arc<Chat>,
+    pub is_fresh: bool,
+}
 
 impl SyncContext {
     pub async fn new(
@@ -46,35 +50,67 @@ impl SyncContext {
         chat: Arc<Chat>,
         integration: &WorkspaceIntegration,
     ) -> anyhow::Result<Self> {
-        let workspace_id = integration.workspace_id;
+        let huly_workspace_id = integration.workspace_id;
         let transactor = SERVICES.new_transactor_client(
             integration.endpoint.clone(),
             &ClaimsBuilder::default()
                 .system_account()
-                .workspace(workspace_id)
+                .workspace(huly_workspace_id)
                 .extra("service", &CONFIG.service_id)
                 .build()?,
         )?;
 
-        let sync_id = SyncId {
-            workspace_id,
-            telegram_user_id: worker.me.id(),
-            chat_id: chat.global_id(),
+        let mut redis = worker.global.redis();
+
+        let key = sync_key(huly_workspace_id, worker.me.id(), &chat.global_id());
+
+        let (info, is_fresh) = match redis.get::<_, Option<Vec<u8>>>(&key).await? {
+            Some(card) => {
+                //
+                (json::from_slice::<SyncInfo>(&card)?, false)
+            }
+            None => {
+                let info = SyncInfo {
+                    telegram_user_id: worker.me.id(),
+                    telegram_chat_id: chat.global_id(),
+
+                    huly_workspace_id,
+                    huly_card_id: ksuid::Ksuid::generate().to_base62(),
+                    huly_card_title: chat.card_title(),
+
+                    is_private: !CONFIG.allowed_dialog_ids.contains(&chat.id().to_string()),
+                };
+
+                (info, true)
+            }
         };
 
-        let state = SyncState::new(sync_id.clone(), worker.global.clone()).await?;
+        let state = SyncState::new(info.clone(), worker.global.clone()).await?;
 
-        let blobs = BlobClient::new(workspace_id)?;
+        let blobs = BlobClient::new(huly_workspace_id)?;
 
         Ok(Self {
-            sync_id,
+            info,
             transactor,
             chat,
             worker,
-            workspace_id,
             state,
             blobs,
+            is_fresh,
         })
+    }
+
+    pub async fn persist_info(&self) -> Result<()> {
+        let key = sync_key(
+            self.info.huly_workspace_id,
+            self.info.telegram_user_id,
+            &self.info.telegram_chat_id,
+        );
+
+        let mut redis = self.worker.global.redis();
+        let _: () = redis.set(&key, &json::to_vec(&self.info)?).await?;
+
+        Ok(())
     }
 
     pub fn transactor(&self) -> &TransactorClient {

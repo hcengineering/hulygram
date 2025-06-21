@@ -120,6 +120,7 @@ impl Worker {
         let phone = &config.phone;
         let params: InitParams = InitParams {
             catch_up: true,
+            update_queue_limit: None,
             ..Default::default()
         };
 

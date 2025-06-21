@@ -1,6 +1,6 @@
 use std::sync::{Arc, atomic::AtomicU32};
 
-use anyhow::Result;
+use anyhow::{Result, bail};
 use chrono::TimeDelta;
 use grammers_client::types::Message;
 use multimap::MultiMap;
@@ -15,10 +15,11 @@ use tracing::*;
 use super::{
     super::context::WorkerContext,
     context::SyncContext,
-    export::{CardInfo, Exporter},
+    export::Exporter,
     state::{Progress, SyncState},
     telegram::{ChatExt, MessageExt},
 };
+
 use crate::{config::CONFIG, integration::TelegramIntegration};
 
 struct SyncChat {
@@ -68,22 +69,34 @@ impl SyncChat {
     ) {
         let mut exporter = Exporter::new(context.clone()).await.unwrap();
 
-        let card = match exporter.ensure_card().await {
-            Ok(Some(card)) => card,
-            Ok(None) => {
-                warn!("NoCard");
-                return;
-            }
-            Err(error) => {
-                error!(%error, "EnsureChannel");
-                return;
-            }
-        };
+        async fn ensure_card(exporter: &mut Exporter, context: &SyncContext) -> Result<()> {
+            use super::export::CardState;
+
+            match exporter.ensure_card(context.is_fresh).await? {
+                CardState::Exists => {
+                    //
+                }
+
+                CardState::Created => {
+                    context.persist_info().await?;
+                }
+
+                CardState::NotExists => {
+                    bail!("NoCard");
+                }
+            };
+
+            Ok(())
+        }
+
+        if let Err(error) = ensure_card(&mut exporter, &context).await {
+            warn!(%error, "EnsureCard");
+            return;
+        }
 
         loop {
             async fn handle_event(
                 event: Arc<ImporterEvent>,
-                card: &CardInfo,
                 state: &SyncState,
                 exporter: &mut Exporter,
             ) -> Result<()> {
@@ -99,15 +112,13 @@ impl SyncChat {
                         match state.get_h_message(telegram_id).await? {
                             None => {
                                 let huly_message =
-                                    exporter.new_message(&card, &person_id, &message).await?;
+                                    exporter.new_message(&person_id, &message).await?;
 
                                 state.set_t_message(telegram_id, huly_message).await?;
                             }
 
                             Some(huly_message) if message.last_date() > huly_message.date => {
-                                exporter
-                                    .edit(&card, &person_id, huly_message, message)
-                                    .await?;
+                                exporter.edit(&person_id, huly_message, message).await?;
                             }
 
                             Some(_) => {
@@ -133,7 +144,7 @@ impl SyncChat {
                         let _enter = span.enter();
 
                         let person_id = exporter.ensure_person(message).await?;
-                        let huly_id = exporter.new_message(&card, &person_id, &message).await?;
+                        let huly_id = exporter.new_message(&person_id, &message).await?;
 
                         state.set_t_message(telegram_id, huly_id).await?;
                     }
@@ -147,9 +158,8 @@ impl SyncChat {
                         if let Some(huly_message) = state.get_h_message(message.id()).await? {
                             let person_id = exporter.ensure_person(message).await?;
 
-                            let huly_message = exporter
-                                .edit(&card, &person_id, huly_message, message)
-                                .await?;
+                            let huly_message =
+                                exporter.edit(&person_id, huly_message, message).await?;
 
                             state.set_t_message(telegram_id, huly_message).await?;
                         }
@@ -161,7 +171,7 @@ impl SyncChat {
 
                         for message in messages {
                             if let Some(huly_message) = state.get_h_message(*message).await? {
-                                exporter.delete(&card, &huly_message.id).await?;
+                                exporter.delete(&huly_message.id).await?;
                             }
                         }
                     }
@@ -187,8 +197,7 @@ impl SyncChat {
             };
 
             if let Some(event) = event {
-                if let Err(error) = handle_event(event, &card, &context.state, &mut exporter).await
-                {
+                if let Err(error) = handle_event(event, &context.state, &mut exporter).await {
                     error!("Error while handling event: {:?}", error);
                 }
             } else {

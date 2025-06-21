@@ -17,7 +17,7 @@ use uuid::Uuid;
 use super::blob::Sender as BlobSender;
 use crate::worker::{limiters::TelegramLimiter, sync::state::BlobDescriptor};
 
-use super::export::{CardInfo, Exporter, MessageId};
+use super::export::{Exporter, MessageId};
 
 trait DownloadIterExt {
     async fn next_timeout(&mut self) -> Result<Option<Vec<u8>>>;
@@ -110,7 +110,6 @@ pub trait MediaTransfer {
         self,
         exporter: &Exporter,
         message: &Message,
-        card: &CardInfo,
         message_id: MessageId,
         social_id: PersonId,
     ) -> Result<()>;
@@ -121,7 +120,6 @@ impl MediaTransfer for Photo {
         self,
         exporter: &Exporter,
         message: &Message,
-        card: &CardInfo,
         message_id: MessageId,
         social_id: PersonId,
     ) -> Result<()> {
@@ -166,7 +164,7 @@ impl MediaTransfer for Photo {
         };
 
         exporter
-            .attach(blob, card, message_id, social_id, message.date())
+            .attach(blob, message_id, social_id, message.date())
             .await?;
 
         Ok(())
@@ -178,7 +176,6 @@ impl MediaTransfer for Document {
         self,
         exporter: &Exporter,
         message: &Message,
-        card: &CardInfo,
         message_id: MessageId,
         social_id: PersonId,
     ) -> Result<()> {
@@ -214,7 +211,7 @@ impl MediaTransfer for Document {
         };
 
         exporter
-            .attach(blob, card, message_id, social_id, message.date())
+            .attach(blob, message_id, social_id, message.date())
             .await?;
 
         Ok(())
