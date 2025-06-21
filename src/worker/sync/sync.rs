@@ -114,7 +114,7 @@ impl SyncChat {
                                 let huly_message =
                                     exporter.new_message(&person_id, &message).await?;
 
-                                state.set_t_message(telegram_id, huly_message).await?;
+                                state.set_message(telegram_id, huly_message).await?;
                             }
 
                             Some(huly_message) if message.last_date() > huly_message.date => {
@@ -146,7 +146,7 @@ impl SyncChat {
                         let person_id = exporter.ensure_person(message).await?;
                         let huly_id = exporter.new_message(&person_id, &message).await?;
 
-                        state.set_t_message(telegram_id, huly_id).await?;
+                        state.set_message(telegram_id, huly_id).await?;
                     }
 
                     ImporterEvent::MessageEdited(message) => {
@@ -161,7 +161,7 @@ impl SyncChat {
                             let huly_message =
                                 exporter.edit(&person_id, huly_message, message).await?;
 
-                            state.set_t_message(telegram_id, huly_message).await?;
+                            state.set_message(telegram_id, huly_message).await?;
                         }
                     }
 

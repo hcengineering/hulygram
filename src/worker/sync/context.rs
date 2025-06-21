@@ -3,11 +3,11 @@ use std::sync::Arc;
 use anyhow::Result;
 use grammers_client::types::Chat;
 use hulyrs::services::{jwt::ClaimsBuilder, transactor::TransactorClient, types::WorkspaceUuid};
-use redis::AsyncCommands;
+use redis::AsyncCommands as _;
 use serde::{Deserialize, Serialize};
 use serde_json as json;
 
-use super::state::SyncState;
+use super::state::{KeyPrefixes, SyncState};
 use super::telegram::ChatExt;
 use crate::config::CONFIG;
 use crate::config::hulyrs::SERVICES;
@@ -108,7 +108,11 @@ impl SyncContext {
         );
 
         let mut redis = self.worker.global.redis();
-        let _: () = redis.set(&key, &json::to_vec(&self.info)?).await?;
+        let rkey = self.info.with_reverse_prefix("ref");
+
+        let _: () = redis
+            .mset(&[(&key, &json::to_string(&self.info)?), (&rkey, &key)])
+            .await?;
 
         Ok(())
     }
