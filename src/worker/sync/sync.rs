@@ -89,10 +89,7 @@ impl SyncChat {
             Ok(())
         }
 
-        if let Err(error) = ensure_card(&mut exporter, &context).await {
-            warn!(%error, "EnsureCard");
-            return;
-        }
+        let mut card_ensured = false;
 
         loop {
             async fn handle_event(
@@ -195,6 +192,15 @@ impl SyncChat {
                     None
                 }
             };
+
+            if !card_ensured {
+                if let Err(error) = ensure_card(&mut exporter, &context).await {
+                    warn!(%error, "EnsureCard");
+                    return;
+                }
+
+                card_ensured = true;
+            }
 
             if let Some(event) = event {
                 if let Err(error) = handle_event(event, &context.state, &mut exporter).await {
