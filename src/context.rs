@@ -3,7 +3,9 @@ use hulyrs::services::{
     account::AccountClient, jwt::Claims, kvs::KvsClient,
     transactor::event::kafka::KafkaEventPublisher,
 };
+
 use redis::{ConnectionInfo, RedisConnectionInfo, aio::MultiplexedConnection};
+use tracing::*;
 
 use crate::config::CONFIG;
 use crate::worker::limiters::Limiters;
@@ -20,39 +22,63 @@ pub struct GlobalContext {
 
 impl GlobalContext {
     pub async fn new(claims: Claims) -> Result<Self> {
+        let urls = CONFIG
+            .redis_urls
+            .iter()
+            .map(|url| {
+                redis::ConnectionAddr::Tcp(
+                    url.host().unwrap().to_string(),
+                    url.port().unwrap_or(6379),
+                )
+            })
+            .collect::<Vec<_>>();
+
         #[cfg(feature = "redis-sentinel")]
         let redis = {
-            use redis::{sentinel::SentinelClient, sentinel::SentinelNodeConnectionInfo};
+            use redis::{sentinel::SentinelClientBuilder, sentinel::SentinelNodeConnectionInfo};
 
-            let mut sentinel = SentinelClient::build(
-                CONFIG.redis_urls.as_slice().into(),
+            let urls1 = CONFIG
+                .redis_urls
+                .iter()
+                .map(|url| url.as_str())
+                .collect::<Vec<_>>()
+                .join(",");
+
+            info!(urls = urls1, "Connecting to redis (sentinel mode)");
+
+            let mut sentinel = SentinelClientBuilder::new(
+                urls,
                 String::from("mymaster"),
-                Some(SentinelNodeConnectionInfo {
-                    tls_mode: Some(redis::TlsMode::Insecure),
-                    redis_connection_info: None,
-                }),
                 redis::sentinel::SentinelServerType::Master,
             )
-            .unwrap();
+            .unwrap()
+            .set_client_to_redis_protocol(redis::ProtocolVersion::RESP3)
+            .set_client_to_redis_db(10)
+            .set_client_to_redis_password(CONFIG.redis_password.to_owned())
+            .set_client_to_sentinel_password(CONFIG.redis_password.to_owned())
+            .set_client_to_redis_tls_mode(redis::TlsMode::Insecure)
+            .set_client_to_sentinel_tls_mode(redis::TlsMode::Insecure)
+            .build()?;
 
-            sentinel.get_async_connection().await.unwrap()
+            sentinel.get_async_connection().await?
         };
 
         #[cfg(not(feature = "redis-sentinel"))]
-        let redis = match CONFIG.redis_urls.as_slice() {
+        let redis = match urls.as_slice() {
             [single] => {
-                let connection_info = ConnectionInfo {
-                    addr: redis::ConnectionAddr::Tcp(
-                        single.host().unwrap().to_string(),
-                        single.port().unwrap_or(6379),
-                    ),
-                    redis: RedisConnectionInfo {
-                        db: 10,
-                        username: None,
-                        password: Some(CONFIG.redis_password.to_owned()),
-                        protocol: redis::ProtocolVersion::RESP3,
-                    },
+                let redis_connection_info = RedisConnectionInfo {
+                    db: 10,
+                    username: None,
+                    password: Some(CONFIG.redis_password.to_owned()),
+                    protocol: redis::ProtocolVersion::RESP3,
                 };
+
+                let connection_info = ConnectionInfo {
+                    addr: single.to_owned(),
+                    redis: redis_connection_info,
+                };
+
+                info!(address = %connection_info.addr, "Connecting to redis (direct)");
 
                 let client = redis::Client::open(connection_info)?;
 
