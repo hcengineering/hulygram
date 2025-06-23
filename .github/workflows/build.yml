@@ -29,3 +29,4 @@ jobs:
           push: true
           tags: '${{ vars.DOCKER_USER }}/service_hulygram:${{ env.VERSION }},${{ vars.DOCKER_USER }}/service_hulygram:latest'
           platforms: linux/amd64,linux/arm64
+          build-args: FEATURES=redis-sentinel
