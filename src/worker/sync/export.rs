@@ -2,7 +2,7 @@ use std::{collections::HashMap, sync::Arc};
 
 use anyhow::{Result, anyhow};
 use chrono::{DateTime, Utc};
-use grammers_client::types::{Media, Message};
+use grammers_client::types::{Chat, Media, Message};
 use hulyrs::services::{
     transactor::{
         event::{
@@ -99,7 +99,22 @@ impl Exporter {
 
     #[instrument(level = "trace", skip_all)]
     pub async fn ensure_person(&mut self, message: &Message) -> Result<PersonId> {
-        let request = message.ensure_person_request();
+        let chat = match self.context.chat.as_ref() {
+            Chat::User(_) => {
+                if message.outgoing() {
+                    message.sender().unwrap()
+                } else {
+                    message.chat()
+                }
+            }
+
+            _ => {
+                //
+                message.sender().unwrap_or_else(|| message.chat())
+            }
+        };
+
+        let request = chat.ensure_person_request();
 
         let mut redis = self.global_context.redis();
 

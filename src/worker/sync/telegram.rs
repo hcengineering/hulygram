@@ -10,47 +10,17 @@ use hulyrs::services::{
 
 pub trait MessageExt {
     fn last_date(&self) -> DateTime<Utc>;
-    fn ensure_person_request(&self) -> EnsurePersonRequest;
     fn as_huly_message(&self) -> HulyMessage;
 }
 
 impl MessageExt for Message {
-    fn ensure_person_request(&self) -> EnsurePersonRequest {
-        fn names(chat: &Chat) -> (String, Option<String>) {
-            match chat {
-                Chat::User(user) => (
-                    user.first_name()
-                        .map(ToString::to_string)
-                        .unwrap_or("Deleted User".to_string()),
-                    user.last_name().map(ToOwned::to_owned),
-                ),
-
-                Chat::Channel(channel) => (channel.title().to_owned(), None),
-
-                Chat::Group(group) => (group.title().unwrap_or("Telegram Group").to_owned(), None),
-            }
-        }
-
-        let sender = self.sender().unwrap_or(self.chat());
-
-        let (first_name, last_name) = names(&sender);
-
-        EnsurePersonRequestBuilder::default()
-            .first_name(first_name)
-            .last_name(last_name)
-            .social_type(SocialIdType::Telegram)
-            .social_value(sender.id().to_string())
-            .build()
-            .unwrap()
-    }
-
     fn last_date(&self) -> DateTime<Utc> {
         self.edit_date().unwrap_or_else(|| self.date())
     }
 
     fn as_huly_message(&self) -> HulyMessage {
         HulyMessage {
-            id: self.id().to_string(),
+            id: self.id(),
             date: self.last_date(),
         }
     }
@@ -68,6 +38,7 @@ pub trait ChatExt {
     fn global_id(&self) -> String;
     fn r#type(&self) -> DialogType;
     fn card_title(&self) -> String;
+    fn ensure_person_request(&self) -> EnsurePersonRequest;
 }
 
 impl ChatExt for Chat {
@@ -103,5 +74,32 @@ impl ChatExt for Chat {
             }
             Chat::Channel(channel) => format!("c{}", channel.id()),
         }
+    }
+
+    fn ensure_person_request(&self) -> EnsurePersonRequest {
+        fn names(chat: &Chat) -> (String, Option<String>) {
+            match chat {
+                Chat::User(user) => (
+                    user.first_name()
+                        .map(ToString::to_string)
+                        .unwrap_or("Deleted User".to_string()),
+                    user.last_name().map(ToOwned::to_owned),
+                ),
+
+                Chat::Channel(channel) => (channel.title().to_owned(), None),
+
+                Chat::Group(group) => (group.title().unwrap_or("Telegram Group").to_owned(), None),
+            }
+        }
+
+        let (first_name, last_name) = names(self);
+
+        EnsurePersonRequestBuilder::default()
+            .first_name(first_name)
+            .last_name(last_name)
+            .social_type(SocialIdType::Telegram)
+            .social_value(self.id().to_string())
+            .build()
+            .unwrap()
     }
 }
