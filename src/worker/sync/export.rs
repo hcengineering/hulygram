@@ -23,7 +23,7 @@ use crate::{
     worker::sync::state::{BlobDescriptor, HulyMessage},
 };
 
-pub type MessageId = String;
+pub type MessageId = i32;
 
 #[derive(Clone)]
 pub(super) struct Exporter {
@@ -136,7 +136,7 @@ impl Exporter {
             let huly_message_id = message.as_huly_message().id;
 
             let create_event = CreateMessageEventBuilder::default()
-                .message_id(huly_message_id.clone())
+                .message_id(huly_message_id.to_string())
                 .message_type(MessageType::Message)
                 .card_id(info.huly_card_id.clone())
                 .card_type("chat:masterTag:Channel")
@@ -232,7 +232,7 @@ impl Exporter {
     ) -> Result<HulyMessage> {
         if !telegram_message.markdown_text().is_empty() {
             let patch_event = UpdatePatchEventBuilder::default()
-                .message_id(&huly_message.id)
+                .message_id(huly_message.id.to_string())
                 .date(telegram_message.last_date())
                 .social_id(person_id)
                 .card_id(&self.context.info.huly_card_id)
@@ -258,10 +258,10 @@ impl Exporter {
         })
     }
 
-    pub(super) async fn delete(&mut self, huly_id: &String) -> Result<()> {
+    pub(super) async fn delete(&mut self, huly_id: i32) -> Result<()> {
         let patch = RemovePatchEventBuilder::default()
             .card_id(&self.context.info.huly_card_id)
-            .message_id(huly_id)
+            .message_id(huly_id.to_string())
             .social_id(&self.context.worker.social_id)
             .date(Utc::now())
             .build()
@@ -315,7 +315,7 @@ impl Exporter {
 
         let attach_event = BlobPatchEventBuilder::default()
             .card_id(&info.huly_card_id)
-            .message_id(message_id)
+            .message_id(message_id.to_string())
             .date(date)
             .social_id(social_id)
             .operations(vec![BlobPatchOperation::Attach {

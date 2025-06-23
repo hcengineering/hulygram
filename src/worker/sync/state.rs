@@ -21,7 +21,7 @@ pub enum Progress {
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq, Default)]
 pub struct HulyMessage {
-    pub id: String,
+    pub id: i32,
     pub date: DateTime<Utc>,
 }
 

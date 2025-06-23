@@ -171,7 +171,7 @@ impl SyncChat {
 
                         for message in messages {
                             if let Some(huly_message) = state.get_h_message(*message).await? {
-                                exporter.delete(&huly_message.id).await?;
+                                exporter.delete(huly_message.id).await?;
                             }
                         }
                     }
