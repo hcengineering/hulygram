@@ -30,7 +30,7 @@ pub struct SyncInfo {
 }
 
 fn sync_key(workspace: WorkspaceUuid, user: i64, chat: &String) -> String {
-    format!("{workspace}:t{user}:{chat}.sync")
+    format!("{workspace}:t{user}:{chat}:sync")
 }
 
 pub struct SyncContext {

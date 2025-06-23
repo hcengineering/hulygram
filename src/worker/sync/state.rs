@@ -47,7 +47,7 @@ pub trait KeyPrefixes {
 impl KeyPrefixes for SyncInfo {
     fn with_base_prefix(&self, s: &str) -> String {
         format!(
-            "{}:t{}:{}.{}",
+            "{}:t{}:{}:{}",
             self.huly_workspace_id, self.telegram_user_id, self.telegram_chat_id, s
         )
     }
@@ -68,18 +68,19 @@ impl SyncState {
     pub async fn set_message(&self, telegram_id: i32, huly_message: HulyMessage) -> Result<()> {
         let mut redis = self.redis.clone();
 
+        let repr = (huly_message.id.clone(), huly_message.date.timestamp());
+
+        let mut bytes = Vec::new();
+        ciborium::into_writer(&repr, &mut bytes)?;
+
         let _: () = redis
-            .hset(
-                self.info.with_base_prefix("messages"),
-                telegram_id,
-                json::to_vec(&huly_message)?,
-            )
+            .hset(self.info.with_base_prefix("messages"), telegram_id, bytes)
             .await?;
 
         let _: () = redis
             .hset(
                 self.info.with_reverse_prefix("messages"),
-                huly_message.id,
+                &huly_message.id,
                 telegram_id,
             )
             .await?;
@@ -94,7 +95,14 @@ impl SyncState {
         Ok(redis
             .hget::<_, _, Option<Vec<u8>>>(self.info.with_base_prefix("messages"), telegram_id)
             .await?
-            .and_then(|bytes| json::from_slice(&bytes).ok()))
+            .and_then(|bytes| {
+                ciborium::from_reader(&bytes[..])
+                    .map(|(id, date)| HulyMessage {
+                        id,
+                        date: DateTime::from_timestamp(date, 0).unwrap(),
+                    })
+                    .ok()
+            }))
     }
 
     pub async fn set_progress(&self, progress: Progress) -> Result<()> {
@@ -119,7 +127,7 @@ impl SyncState {
 
     pub async fn get_blob(&self, id: i64) -> Result<Option<BlobDescriptor>> {
         let mut redis = self.redis.clone();
-        let key = self.info.with_base_prefix("blobs");
+        let key = "blobs";
 
         Ok(redis
             .hget::<_, _, Option<Vec<u8>>>(key, id)
@@ -129,7 +137,7 @@ impl SyncState {
 
     pub async fn set_blob(&self, id: i64, blob: &BlobDescriptor) -> Result<()> {
         let mut redis = self.redis.clone();
-        let key = self.info.with_base_prefix("blobs");
+        let key = "blobs";
 
         Ok(redis.hset(key, id, json::to_vec(blob)?).await?)
     }
