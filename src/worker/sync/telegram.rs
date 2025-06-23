@@ -1,6 +1,5 @@
 use chrono::{DateTime, Utc};
 use grammers_client::types::{Chat, Message};
-use serde::{Deserialize, Serialize};
 
 use super::state::HulyMessage;
 use hulyrs::services::{
@@ -26,17 +25,9 @@ impl MessageExt for Message {
     }
 }
 
-#[derive(Debug, Serialize, Deserialize, Copy, Clone)]
-pub enum DialogType {
-    User,
-    Group,
-    Channel,
-}
-
 pub trait ChatExt {
     fn is_deleted(&self) -> bool;
     fn global_id(&self) -> String;
-    fn r#type(&self) -> DialogType;
     fn card_title(&self) -> String;
     fn ensure_person_request(&self) -> EnsurePersonRequest;
 }
@@ -47,14 +38,6 @@ impl ChatExt for Chat {
             return user.deleted();
         } else {
             false
-        }
-    }
-
-    fn r#type(&self) -> DialogType {
-        match self {
-            Chat::User(_) => DialogType::User,
-            Chat::Group(_) => DialogType::Group,
-            Chat::Channel(_) => DialogType::Channel,
         }
     }
 

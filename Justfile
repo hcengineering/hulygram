@@ -1,7 +1,7 @@
 set dotenv-load
 
-image arch='amd64':
-    docker buildx build --tag=hardcoreeng/hulygram:latest --platform=linux/{{arch}} .
+image arch='amd64' features='dummy':
+    docker buildx build --tag=hardcoreeng/hulygram:latest --platform=linux/{{arch}} --build-arg FEATURES={{features}} .
 
 bytehound:
     cargo build
@@ -15,4 +15,7 @@ pprof:
 
 
 redis-cli:
-    redis-cli -h 127.0.0.1
+    redis-cli -n 10 -h 127.0.0.1
+
+redis-flush:
+    python3 _hidden/redis_flush.py   

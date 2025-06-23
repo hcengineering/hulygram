@@ -37,6 +37,18 @@ enum ImporterEvent {
     BackfillComplete,
 }
 
+impl ImporterEvent {
+    fn id(&self) -> i32 {
+        match self {
+            ImporterEvent::BackfillMessage(message) => message.id(),
+            ImporterEvent::NewMessage(message) => message.id(),
+            ImporterEvent::MessageEdited(message) => message.id(),
+            ImporterEvent::MessageDeleted(_) => -1,
+            ImporterEvent::BackfillComplete => -1,
+        }
+    }
+}
+
 impl SyncChat {
     #[instrument(level = "trace", skip_all)]
     async fn spawn(context: Arc<SyncContext>) -> Result<(Self, JoinHandle<()>)> {
@@ -92,6 +104,7 @@ impl SyncChat {
         let mut card_ensured = false;
 
         loop {
+            #[instrument(level = "debug", skip_all, fields(event_id = %event.id()))]
             async fn handle_event(
                 event: Arc<ImporterEvent>,
                 state: &SyncState,
@@ -100,9 +113,6 @@ impl SyncChat {
                 match &*event {
                     ImporterEvent::BackfillMessage(message) => {
                         let telegram_id = message.id();
-
-                        let span = span!(Level::TRACE, "Backfill", telegram_id);
-                        let _enter = span.enter();
 
                         let person_id = exporter.ensure_person(message).await?;
 
@@ -127,8 +137,6 @@ impl SyncChat {
                     }
 
                     ImporterEvent::BackfillComplete => {
-                        debug!("Backfill Complete");
-
                         if !crate::config::CONFIG.dry_run {
                             _ = state.set_progress(Progress::Complete).await;
                         }
@@ -136,9 +144,6 @@ impl SyncChat {
 
                     ImporterEvent::NewMessage(message) => {
                         let telegram_id = message.id();
-
-                        let span = span!(Level::TRACE, "NewMessage", telegram_id);
-                        let _enter = span.enter();
 
                         let person_id = exporter.ensure_person(message).await?;
                         let huly_id = exporter.new_message(&person_id, &message).await?;
@@ -148,9 +153,6 @@ impl SyncChat {
 
                     ImporterEvent::MessageEdited(message) => {
                         let telegram_id = message.id();
-
-                        let span = span!(Level::TRACE, "MessageEdited", telegram_id);
-                        let _enter = span.enter();
 
                         if let Some(huly_message) = state.get_h_message(message.id()).await? {
                             let person_id = exporter.ensure_person(message).await?;
@@ -163,9 +165,6 @@ impl SyncChat {
                     }
 
                     ImporterEvent::MessageDeleted(messages) => {
-                        let span = span!(Level::TRACE, "MessageDeleted", telegram_ids = ?messages);
-                        let _enter = span.enter();
-
                         for message in messages {
                             if let Some(huly_message) = state.get_h_message(*message).await? {
                                 exporter.delete(huly_message.id).await?;
@@ -173,6 +172,8 @@ impl SyncChat {
                         }
                     }
                 }
+
+                debug!("Event handled");
 
                 Ok(())
             }
@@ -228,22 +229,7 @@ impl SyncChat {
             messages = messages.offset_id(offset);
         }
 
-        let mut count = 0;
-
         loop {
-            count += 1;
-
-            if progress.is_complete() {
-                if count >= 100 {
-                    trace!("Limit reached");
-                    let _ = self
-                        .sender_backfill
-                        .send(Arc::new(ImporterEvent::BackfillComplete))
-                        .await;
-                    break;
-                }
-            }
-
             let next = time::timeout(Duration::from_secs(30), messages.next());
 
             self.context
@@ -281,7 +267,7 @@ impl SyncChat {
             }
         }
 
-        debug!(count, "Backfill end");
+        debug!("Backfill complete");
     }
 }
 
@@ -342,19 +328,6 @@ impl Sync {
 
                     _ => {}
                 }
-
-                debug!(%chat_id, title=chat.card_title(),  "*** Found Chat");
-
-                /*
-                let card_id = if let Some(channel) = integration.find_channel_mapping(chat_id) {
-                    channel.card_id.clone()
-                } else {
-                    let card_id = ksuid::Ksuid::generate().to_base62();
-                    integration.add_channel_mapping(chat_id, card_id.clone());
-
-                    card_id
-                };
-                */
 
                 let context = Arc::new(
                     SyncContext::new(self.context.clone(), chat.clone(), integration).await?,

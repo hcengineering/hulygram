@@ -25,7 +25,7 @@ trait DownloadIterExt {
 
 impl DownloadIterExt for DownloadIter {
     async fn next_timeout(&mut self) -> Result<Option<Vec<u8>>> {
-        match time::timeout(Duration::from_secs(30), self.next()).await {
+        match time::timeout(Duration::from_secs(60), self.next()).await {
             Ok(x) => x.map_err(Into::into),
             Err(_) => {
                 anyhow::bail!("Timeout, downloadning blob chunk");
@@ -116,6 +116,7 @@ pub trait MediaTransfer {
 }
 
 impl MediaTransfer for Photo {
+    #[instrument(level = "debug", skip_all)]
     async fn transfer(
         self,
         exporter: &Exporter,
@@ -172,6 +173,7 @@ impl MediaTransfer for Photo {
 }
 
 impl MediaTransfer for Document {
+    #[instrument(level = "debug", skip_all)]
     async fn transfer(
         self,
         exporter: &Exporter,
@@ -189,6 +191,8 @@ impl MediaTransfer for Document {
             let blob_id = Uuid::new_v4();
             let length = self.size() as usize;
             let mime_type = self.mime_type().unwrap_or("application/binary");
+
+            debug!(%blob_id, length, mime_type, "Transferring document");
 
             let (upload, ready) = blobs.upload(blob_id, length, mime_type)?;
             telegram.stream(&self, upload, &limiters.get_file).await?;

@@ -3,7 +3,7 @@ use std::sync::Arc;
 use anyhow::Result;
 use grammers_client::types::Chat;
 use hulyrs::services::{jwt::ClaimsBuilder, transactor::TransactorClient, types::WorkspaceUuid};
-use serde::{Deserialize, Serialize, ser};
+use serde::{Deserialize, Serialize};
 use serde_json as json;
 
 use super::state::SyncState;

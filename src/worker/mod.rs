@@ -7,4 +7,4 @@ mod sync;
 mod worker;
 
 pub use supervisor::{SupervisorInner as Supervisor, new as new_supervisor};
-pub use worker::{WorkerAccess, WorkerConfig, WorkerHintsBuilder, WorkerStateResponse};
+pub use worker::{WorkerAccess, WorkerHintsBuilder, WorkerStateResponse};

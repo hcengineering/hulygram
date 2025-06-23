@@ -3,10 +3,7 @@ use hulyrs::services::{
     account::AccountClient, jwt::Claims, kvs::KvsClient,
     transactor::event::kafka::KafkaEventPublisher,
 };
-use redis::{
-    ConnectionInfo, ConnectionLike, RedisConnectionInfo,
-    aio::{ConnectionManager, ConnectionManagerConfig, MultiplexedConnection},
-};
+use redis::{ConnectionInfo, RedisConnectionInfo, aio::MultiplexedConnection};
 
 use crate::config::CONFIG;
 use crate::worker::limiters::Limiters;

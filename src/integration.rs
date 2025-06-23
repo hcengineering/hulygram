@@ -77,16 +77,6 @@ pub struct ChannelConfig {
 }
 
 impl WorkspaceIntegration {
-    pub fn is_enabled(&self, telegram_id: i64) -> bool {
-        self.data
-            .config
-            .channels
-            .iter()
-            .find(|c| c.telegram_id == telegram_id)
-            .map(|c| c.enabled)
-            .unwrap_or(false)
-    }
-
     pub fn find_channel_config(&self, telegram_id: i64) -> Option<&ChannelConfig> {
         self.data
             .config
@@ -94,25 +84,6 @@ impl WorkspaceIntegration {
             .iter()
             .find(|c| c.telegram_id == telegram_id)
     }
-
-    /*
-
-    pub fn find_channel_mapping(&self, telegram_id: i64) -> Option<&ChannelMapping> {
-        self.data
-            .mappings
-            .iter()
-            .find(|c| c.telegram_id == telegram_id)
-    }
-
-    pub fn add_channel_mapping(&mut self, telegram_id: i64, card_id: String) {
-        self.data.mappings.push(ChannelMapping {
-            telegram_id,
-            card_id,
-        });
-
-        self.is_modified = true;
-    }
-    */
 }
 
 pub trait TelegramIntegration {

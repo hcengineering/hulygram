@@ -16,7 +16,12 @@ use hulyrs::services::{
 use redis::AsyncCommands;
 use tracing::*;
 
-use super::{context::SyncContext, media::MediaTransfer, telegram::MessageExt, tx::TransactorExt};
+use super::{
+    context::SyncContext,
+    media::MediaTransfer,
+    telegram::{ChatExt, MessageExt},
+    tx::TransactorExt,
+};
 use crate::{
     CONFIG,
     context::GlobalContext,
@@ -135,10 +140,9 @@ impl Exporter {
         }
     }
 
-    #[instrument(level = "trace", skip_all)]
+    #[instrument(level = "debug", skip_all)]
     pub async fn new_message(
         &mut self,
-        //card: &CardInfo,
         person_id: &String,
         message: &Message,
     ) -> Result<HulyMessage> {
@@ -238,7 +242,7 @@ impl Exporter {
         Ok(message.as_huly_message())
     }
 
-    #[instrument(level = "trace", skip_all)]
+    #[instrument(level = "debug", skip_all)]
     pub async fn edit(
         &mut self,
         person_id: &PersonId,
@@ -299,7 +303,6 @@ impl Exporter {
     pub async fn attach(
         &self,
         blob: BlobDescriptor,
-        //  info: &SyncInfo,
         message_id: MessageId,
         social_id: PersonId,
         date: DateTime<Utc>,
