@@ -1,7 +1,7 @@
 set dotenv-load
 
-image arch='amd64' features='dummy':
-    docker buildx build --tag=hardcoreeng/hulygram:latest --platform=linux/{{arch}} --build-arg FEATURES={{features}} .
+image arch='amd64':
+    docker buildx build --tag=hardcoreeng/hulygram:latest --platform=linux/{{arch}} .
 
 bytehound:
     cargo build

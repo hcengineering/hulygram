@@ -1,6 +1,5 @@
 FROM --platform=$BUILDPLATFORM rust:1.86 AS builder
 ARG TARGETPLATFORM
-ARG FEATURES=dummy
 
 WORKDIR /tmp/build
 
@@ -12,7 +11,7 @@ RUN \
     if [ "$TARGETPLATFORM" = "linux/amd64" ]; then \
         apt-get update && apt-get install -y cmake \
         && rm -rf /var/lib/apt/lists/* ; \
-        cargo build --release --target=x86_64-unknown-linux-gnu --features $FEATURES ; \
+        cargo build --release --target=x86_64-unknown-linux-gnu ; \
     elif [ "$TARGETPLATFORM" = "linux/arm64" ]; then \
         apt-get update && apt-get install -y \
         gcc-aarch64-linux-gnu \
@@ -24,7 +23,7 @@ RUN \
         export CC_aarch64_unknown_linux_gnu=aarch64-linux-gnu-gcc ; \
         export CXX_aarch64_unknown_linux_gnu=aarch64-linux-gnu-g++ ; \
         export CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc ; \
-        cargo build --release --target=aarch64-unknown-linux-gnu --features $FEATURES ; \
+        cargo build --release --target=aarch64-unknown-linux-gnu ; \
     else \
       echo "Unexpected target platform: $TARGETPLATFORM" && exit 1 ; \
     fi

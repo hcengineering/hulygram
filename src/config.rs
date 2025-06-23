@@ -21,6 +21,13 @@ pub mod hulyrs {
         LazyLock::new(|| hulyrs::ServiceFactory::new(CONFIG.clone()));
 }
 
+#[derive(Deserialize, Debug, PartialEq)]
+#[serde(rename_all = "lowercase")]
+pub enum RedisMode {
+    Sentinel,
+    Direct,
+}
+
 #[serde_as]
 #[derive(Deserialize, Debug)]
 pub struct Config {
@@ -37,6 +44,8 @@ pub struct Config {
     #[serde_as(as = "StringWithSeparator::<CommaSeparator, url::Url>")]
     pub redis_urls: Vec<Url>,
     pub redis_password: String,
+    pub redis_mode: RedisMode,
+    pub redis_service: String,
 
     #[serde_as(as = "StringWithSeparator::<CommaSeparator, String>")]
     pub allowed_dialog_ids: HashSet<String>,
