@@ -3,11 +3,10 @@ use std::sync::Arc;
 use anyhow::Result;
 use grammers_client::types::Chat;
 use hulyrs::services::{jwt::ClaimsBuilder, transactor::TransactorClient, types::WorkspaceUuid};
-use redis::AsyncCommands as _;
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Serialize, ser};
 use serde_json as json;
 
-use super::state::{KeyPrefixes, SyncState};
+use super::state::SyncState;
 use super::telegram::ChatExt;
 use crate::config::CONFIG;
 use crate::config::hulyrs::SERVICES;
@@ -20,6 +19,8 @@ pub struct SyncInfo {
     pub huly_workspace_id: WorkspaceUuid,
 
     pub telegram_user_id: i64,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub telegram_phone_number: Option<String>,
     pub telegram_chat_id: String,
 
@@ -27,10 +28,6 @@ pub struct SyncInfo {
     pub huly_card_title: String,
 
     pub is_private: bool,
-}
-
-fn sync_key(workspace: WorkspaceUuid, user: i64, chat: &String) -> String {
-    format!("{workspace}:t{user}:{chat}:sync")
 }
 
 pub struct SyncContext {
@@ -43,6 +40,14 @@ pub struct SyncContext {
     pub state: SyncState,
     pub chat: Arc<Chat>,
     pub is_fresh: bool,
+}
+
+fn sync_key(workspace: WorkspaceUuid, user: i64, chat: &String) -> String {
+    format!("syn_{workspace}:{user}:{chat}")
+}
+
+fn sync_key_ref(info: &SyncInfo) -> String {
+    format!("syn_ref_{}:{}", info.huly_workspace_id, info.huly_card_id)
 }
 
 impl SyncContext {
@@ -61,11 +66,10 @@ impl SyncContext {
                 .build()?,
         )?;
 
-        let mut redis = worker.global.redis();
-
+        let kvs = worker.global.kvs();
         let key = sync_key(huly_workspace_id, worker.me.id(), &chat.global_id());
 
-        let (info, is_fresh) = match redis.get::<_, Option<Vec<u8>>>(&key).await? {
+        let (info, is_fresh) = match kvs.get(&key).await? {
             Some(card) => {
                 //
                 (json::from_slice::<SyncInfo>(&card)?, false)
@@ -103,18 +107,17 @@ impl SyncContext {
     }
 
     pub async fn persist_info(&self) -> Result<()> {
+        let kvs = self.worker.global.kvs();
+
         let key = sync_key(
             self.info.huly_workspace_id,
             self.info.telegram_user_id,
             &self.info.telegram_chat_id,
         );
+        let r#ref = sync_key_ref(&self.info);
 
-        let mut redis = self.worker.global.redis();
-        let rkey = self.info.with_reverse_prefix("ref");
-
-        let _: () = redis
-            .mset(&[(&key, &json::to_string(&self.info)?), (&rkey, &key)])
-            .await?;
+        kvs.upsert(&key, &json::to_vec(&self.info)?).await?;
+        kvs.upsert(&r#ref, &key.as_bytes()).await?;
 
         Ok(())
     }
