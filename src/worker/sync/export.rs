@@ -7,7 +7,8 @@ use hulyrs::services::{
     transactor::{
         event::{
             BlobDataBuilder, BlobPatchEventBuilder, BlobPatchOperation, CreateMessageEventBuilder,
-            MessageRequestType, MessageType, RemovePatchEventBuilder, UpdatePatchEventBuilder,
+            CreateMessageOptionsBuilder, MessageRequestType, MessageType, RemovePatchEventBuilder,
+            UpdatePatchEventBuilder,
         },
         person::EnsurePerson,
     },
@@ -145,6 +146,7 @@ impl Exporter {
         &mut self,
         person_id: &String,
         message: &Message,
+        notify: bool,
     ) -> Result<HulyMessage> {
         let info = &self.context.info;
         let workspace_id = info.huly_workspace_id;
@@ -154,6 +156,11 @@ impl Exporter {
         let create_message = async || -> Result<MessageId> {
             let huly_message_id = message.as_huly_message().id;
 
+            let options = CreateMessageOptionsBuilder::default()
+                .no_notify(!notify)
+                .build()
+                .unwrap();
+
             let create_event = CreateMessageEventBuilder::default()
                 .message_id(huly_message_id.to_string())
                 .message_type(MessageType::Message)
@@ -162,6 +169,7 @@ impl Exporter {
                 .content(message.markdown_text())
                 .social_id(person_id)
                 .date(message.date())
+                .options(options)
                 .build()
                 .unwrap();
 

@@ -119,7 +119,7 @@ impl SyncChat {
                         match state.get_h_message(telegram_id).await? {
                             None => {
                                 let huly_message =
-                                    exporter.new_message(&person_id, &message).await?;
+                                    exporter.new_message(&person_id, &message, false).await?;
 
                                 state.set_message(telegram_id, huly_message).await?;
                             }
@@ -146,7 +146,7 @@ impl SyncChat {
                         let telegram_id = message.id();
 
                         let person_id = exporter.ensure_person(message).await?;
-                        let huly_id = exporter.new_message(&person_id, &message).await?;
+                        let huly_id = exporter.new_message(&person_id, &message, true).await?;
 
                         state.set_message(telegram_id, huly_id).await?;
                     }
