@@ -29,6 +29,7 @@ struct SyncChat {
     context: Arc<SyncContext>,
 }
 
+#[derive(strum::Display)]
 enum ImporterEvent {
     BackfillMessage(Message),
     NewMessage(Message),
@@ -104,7 +105,7 @@ impl SyncChat {
         let mut card_ensured = false;
 
         loop {
-            #[instrument(level = "debug", skip_all, fields(event_id = %event.id()))]
+            #[instrument(level = "debug", skip_all, fields(event_type = %event.to_string(), event_id = %event.id()))]
             async fn handle_event(
                 event: Arc<ImporterEvent>,
                 state: &SyncState,
@@ -173,7 +174,7 @@ impl SyncChat {
                     }
                 }
 
-                debug!("Event handled");
+                debug!("Processed");
 
                 Ok(())
             }
