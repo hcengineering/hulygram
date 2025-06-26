@@ -14,10 +14,10 @@ actix-web = { version = "4.10.2", features = ["rustls"] }
 actix-cors = "0.7.1"
 phonenumber = "0.3.7"
 thiserror = "2.0.12"
-grammers-client = { git = "https://github.com/aav/grammers", features = [
-    "markdown",
-] }
+grammers-client = { git = "https://github.com/aav/grammers" }
 grammers-mtsender = { git = "https://github.com/aav/grammers" }
+grammers-tl-types = { git = "https://github.com/aav/grammers" }
+
 serde_json = "1.0.140"
 strum = { version = "0.27.1", features = ["derive"] }
 hulyrs = { git = "https://github.com/hcengineering/hulyrs.git", features = [
@@ -58,6 +58,7 @@ redis = { version = "0.32.2", features = [
     "connection-manager",
     "sentinel",
 ] }
+widestring = "1.2.0"
 
 [features]
 redis-sentinel = ["redis/sentinel"]

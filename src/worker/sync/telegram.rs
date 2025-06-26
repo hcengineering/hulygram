@@ -1,5 +1,6 @@
 use chrono::{DateTime, Utc};
 use grammers_client::types::{Chat, Message};
+use grammers_tl_types as tl;
 
 use super::state::HulyMessage;
 use hulyrs::services::{
@@ -10,6 +11,7 @@ use hulyrs::services::{
 pub trait MessageExt {
     fn last_date(&self) -> DateTime<Utc>;
     fn as_huly_message(&self) -> HulyMessage;
+    fn markdown_text(&self) -> String;
 }
 
 impl MessageExt for Message {
@@ -21,6 +23,22 @@ impl MessageExt for Message {
         HulyMessage {
             id: self.id(),
             date: self.last_date(),
+        }
+    }
+
+    fn markdown_text(&self) -> String {
+        fn entities(message: &Message) -> Option<&Vec<tl::enums::MessageEntity>> {
+            match &message.raw {
+                tl::enums::Message::Empty(_) => None,
+                tl::enums::Message::Message(message) => message.entities.as_ref(),
+                tl::enums::Message::Service(_) => None,
+            }
+        }
+
+        if let Some(entities) = entities(self) {
+            super::markdown::generate_markdown_message(self.text(), entities)
+        } else {
+            self.text().to_owned()
         }
     }
 }
