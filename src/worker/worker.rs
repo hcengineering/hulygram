@@ -156,14 +156,17 @@ impl Worker {
     }
 
     async fn persist_session(&self) -> Result<()> {
-        Ok(self
-            .context
-            .as_ref()
-            .expect("context is not set")
-            .global
-            .kvs()
-            .upsert(&self.session_key, &self.client.session().save())
-            .await?)
+        if let Some(context) = self.context.as_ref() {
+            context
+                .global
+                .kvs()
+                .upsert(&self.session_key, &self.client.session().save())
+                .await?
+        } else {
+            warn!("Context is not set, session not persited");
+        }
+
+        Ok(())
     }
 
     async fn state_response(&self, state: &WorkerState) -> Result<WorkerStateResponse> {
