@@ -1,7 +1,6 @@
 use anyhow::{Result, bail};
 use hulyrs::services::{
-    account::AccountClient, jwt::Claims, kvs::KvsClient,
-    transactor::event::kafka::KafkaEventPublisher,
+    account::AccountClient, jwt::Claims, kvs::KvsClient, transactor::kafka::KafkaEventPublisher,
 };
 
 use redis::{ConnectionInfo, RedisConnectionInfo, aio::MultiplexedConnection};

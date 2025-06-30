@@ -61,7 +61,7 @@ impl TransactorExt for TransactorClient {
             }))
             .build()?;
 
-        self.tx::<Value, _>(create_channel).await?;
+        self.tx::<_, Value>(create_channel).await?;
 
         debug!("Created");
 

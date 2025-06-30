@@ -5,10 +5,10 @@ use chrono::{DateTime, Utc};
 use grammers_client::types::{Chat, Media, Message};
 use hulyrs::services::{
     transactor::{
-        event::{
+        comm::{
             BlobDataBuilder, BlobPatchEventBuilder, BlobPatchOperation, CreateMessageEventBuilder,
-            CreateMessageOptionsBuilder, MessageRequestType, MessageType, RemovePatchEventBuilder,
-            UpdatePatchEventBuilder,
+            CreateMessageOptionsBuilder, Envelope, MessageRequestType, MessageType,
+            RemovePatchEventBuilder, UpdatePatchEventBuilder,
         },
         person::EnsurePerson,
     },
@@ -173,14 +173,12 @@ impl Exporter {
                 .build()
                 .unwrap();
 
+            let create_event = Envelope::new(MessageRequestType::CreateMessage, create_event);
+
             if !dry_run {
                 self.global_context
                     .hulygun()
-                    .request(
-                        workspace_id,
-                        MessageRequestType::CreateMessage,
-                        create_event,
-                    )
+                    .tx(workspace_id, create_event, Some(&info.huly_card_id))
                     .await?;
             }
 
@@ -200,10 +198,12 @@ impl Exporter {
                         .build()
                         .unwrap();
 
+                    let patch_event = Envelope::new(MessageRequestType::UpdatePatch, patch_event);
+
                     if !dry_run {
                         self.global_context
                             .hulygun()
-                            .request(workspace_id, MessageRequestType::UpdatePatch, patch_event)
+                            .tx(workspace_id, patch_event, Some(&info.huly_card_id))
                             .await?;
                     }
                 }
@@ -267,13 +267,15 @@ impl Exporter {
                 .build()
                 .unwrap();
 
+            let patch_event = Envelope::new(MessageRequestType::UpdatePatch, patch_event);
+
             if !crate::config::CONFIG.dry_run {
                 self.global_context
                     .hulygun()
-                    .request(
+                    .tx(
                         self.context.info.huly_workspace_id,
-                        MessageRequestType::UpdatePatch,
                         patch_event,
+                        Some(&self.context.info.huly_card_id),
                     )
                     .await?;
             }
@@ -286,7 +288,7 @@ impl Exporter {
     }
 
     pub(super) async fn delete(&mut self, huly_id: i32) -> Result<()> {
-        let patch = RemovePatchEventBuilder::default()
+        let patch_event = RemovePatchEventBuilder::default()
             .card_id(&self.context.info.huly_card_id)
             .message_id(huly_id.to_string())
             .social_id(&self.context.worker.social_id)
@@ -294,13 +296,15 @@ impl Exporter {
             .build()
             .unwrap();
 
+        let patch_event = Envelope::new(MessageRequestType::RemovePatch, patch_event);
+
         if !crate::config::CONFIG.dry_run {
             self.global_context
                 .hulygun()
-                .request(
+                .tx(
                     self.context.info.huly_workspace_id,
-                    MessageRequestType::RemovePatch,
-                    patch,
+                    patch_event,
+                    Some(&self.context.info.huly_card_id),
                 )
                 .await?;
         }
@@ -349,15 +353,17 @@ impl Exporter {
             }])
             .build()?;
 
+        let attach_event = Envelope::new(MessageRequestType::BlobPatch, attach_event);
+
         if !CONFIG.dry_run {
             self.context
                 .worker
                 .global
                 .hulygun()
-                .request(
+                .tx(
                     self.context.info.huly_workspace_id,
-                    MessageRequestType::BlobPatch,
                     attach_event,
+                    Some(&info.huly_card_id),
                 )
                 .await?;
 
