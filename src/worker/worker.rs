@@ -102,7 +102,6 @@ pub struct Worker {
     pub client: Client,
     session_key: String,
     sync: Option<Sync>,
-    context: Option<Arc<WorkerContext>>,
     global_context: Arc<GlobalContext>,
 }
 
@@ -150,23 +149,16 @@ impl Worker {
             client,
             session_key,
             sync: None,
-            context: None,
             global_context,
         })
     }
 
     async fn persist_session(&self) -> Result<()> {
-        if let Some(context) = self.context.as_ref() {
-            context
-                .global
-                .kvs()
-                .upsert(&self.session_key, &self.client.session().save())
-                .await?
-        } else {
-            warn!("Context is not set, session not persited");
-        }
-
-        Ok(())
+        Ok(self
+            .global_context
+            .kvs()
+            .upsert(&self.session_key, &self.client.session().save())
+            .await?)
     }
 
     async fn state_response(&self, state: &WorkerState) -> Result<WorkerStateResponse> {
@@ -219,7 +211,6 @@ impl Worker {
                 sync.spawn().await?;
 
                 self.sync = Some(sync);
-                self.context = Some(context);
 
                 let token = CONFIG.base_url.join("/push/")?.join(phone)?.to_string();
 
