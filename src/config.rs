@@ -39,7 +39,8 @@ pub struct Config {
 
     pub kvs_namespace: String,
     pub service_id: String,
-    pub event_topic: String,
+
+    pub outbound_tx_topic: String,
 
     #[serde_as(as = "StringWithSeparator::<CommaSeparator, url::Url>")]
     pub redis_urls: Vec<Url>,
@@ -54,7 +55,6 @@ pub struct Config {
     pub get_history_rate_limit: NonZero<u32>,
 
     pub sync_process_limit: usize,
-
     pub sync_process_limit_local: usize,
 
     pub blob_service_path: Url,

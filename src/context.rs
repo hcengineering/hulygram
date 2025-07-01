@@ -93,7 +93,7 @@ impl GlobalContext {
         Ok(Self {
             kvs: SERVICES.new_kvs_client(&CONFIG.kvs_namespace, &claims)?,
             account: SERVICES.new_account_client(&claims)?,
-            hulygun: SERVICES.new_kafka_event_publisher(&CONFIG.event_topic)?,
+            hulygun: SERVICES.new_kafka_event_publisher(&Coutbound_tx_topic_topic)?,
             limiters: Limiters::new(),
             redis,
         })
