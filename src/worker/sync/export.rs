@@ -10,6 +10,7 @@ use hulyrs::services::{
             CreateMessageOptionsBuilder, Envelope, MessageRequestType, MessageType,
             RemovePatchEventBuilder, UpdatePatchEventBuilder,
         },
+        document::CreateDocumentBuilder,
         person::EnsurePerson,
     },
     types::PersonId,
@@ -86,13 +87,29 @@ impl Exporter {
                     "card:space:Default".to_owned()
                 };
 
-                tx.create_channel(
-                    &info.huly_card_id,
-                    &self.context.worker.social_id,
-                    &space_id,
-                    &info.huly_card_title,
-                )
-                .await?;
+                let now = chrono::Utc::now();
+                let create_channel = CreateDocumentBuilder::default()
+                    .object_id(&info.huly_card_id)
+                    .object_class("chat:masterTag:Channel")
+                    .created_by(&self.context.worker.social_id)
+                    .created_on(now)
+                    .modified_by(&self.context.worker.social_id)
+                    .modified_on(now)
+                    .object_space(space_id)
+                    .attributes(serde_json::json!({
+                        "title": &info.huly_card_title,
+                        "private": true,
+                    }))
+                    .build()?;
+
+                self.global_context
+                    .hulygun()
+                    .tx(
+                        info.huly_workspace_id,
+                        create_channel,
+                        Some(&info.huly_card_id),
+                    )
+                    .await?;
 
                 CardState::Created
             } else {

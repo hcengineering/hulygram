@@ -4,22 +4,14 @@ use anyhow::{Ok, Result};
 use hulyrs::services::{
     transactor::{
         TransactorClient,
-        document::{CreateDocumentBuilder, DocumentClient, FindOptionsBuilder},
+        document::{DocumentClient, FindOptionsBuilder},
     },
-    types::{PersonId, PersonUuid, SocialIdId},
+    types::{PersonId, PersonUuid},
 };
 use serde_json::{Value, json};
 use tracing::*;
 
 pub(super) trait TransactorExt {
-    async fn create_channel(
-        &self,
-        card_id: &str,
-        social_id: &SocialIdId,
-        space_id: &str,
-        title: &str,
-    ) -> Result<()>;
-
     #[allow(dead_code)]
     async fn enumerate_channels(&self) -> Result<HashSet<String>>;
 
@@ -38,36 +30,6 @@ fn id(v: Option<Value>) -> Option<String> {
 }
 
 impl TransactorExt for TransactorClient {
-    #[instrument(level = "debug", skip(self))]
-    async fn create_channel(
-        &self,
-        card_id: &str,
-        social_id: &SocialIdId,
-        space_id: &str,
-        title: &str,
-    ) -> Result<()> {
-        let now = chrono::Utc::now();
-        let create_channel = CreateDocumentBuilder::default()
-            .object_id(card_id)
-            .object_class("chat:masterTag:Channel")
-            .created_by(social_id)
-            .created_on(now)
-            .modified_by(social_id)
-            .modified_on(now)
-            .object_space(space_id)
-            .attributes(serde_json::json!({
-                "title": title,
-                "private": true,
-            }))
-            .build()?;
-
-        self.tx::<_, Value>(create_channel).await?;
-
-        debug!("Created");
-
-        Ok(())
-    }
-
     async fn find_channel(&self, channel_id: &str) -> Result<bool> {
         let query = json!({
             "_id": channel_id,
