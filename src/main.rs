@@ -7,6 +7,7 @@ use tokio::{
     select,
     signal::unix::{SignalKind, signal},
 };
+use tracing::*;
 
 mod config;
 mod context;
@@ -70,6 +71,10 @@ async fn main() -> anyhow::Result<()> {
         env!("CARGO_PKG_NAME"),
         env!("CARGO_PKG_VERSION")
     );
+
+    if config::CONFIG.dry_run {
+        warn!("Dry-run mode is on, no messages will be replicated");
+    }
 
     let system_account = ClaimsBuilder::default()
         .system_account()
