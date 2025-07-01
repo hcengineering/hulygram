@@ -3,8 +3,9 @@ mod config;
 mod context;
 pub mod limiters;
 mod supervisor;
-mod sync;
+pub mod sync;
 mod worker;
 
 pub use supervisor::{SupervisorInner as Supervisor, new as new_supervisor};
-pub use worker::{WorkerAccess, WorkerHintsBuilder, WorkerStateResponse};
+pub use sync::context::SyncContext;
+pub use worker::{Message, WorkerAccess, WorkerHintsBuilder, WorkerStateResponse};

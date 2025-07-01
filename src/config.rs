@@ -41,6 +41,8 @@ pub struct Config {
     pub service_id: String,
 
     pub outbound_tx_topic: String,
+    pub inbound_tx_topic: String,
+    pub inbound_tx_group_id: String,
 
     #[serde_as(as = "StringWithSeparator::<CommaSeparator, url::Url>")]
     pub redis_urls: Vec<Url>,

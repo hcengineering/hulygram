@@ -1,6 +1,6 @@
 use anyhow::{Result, bail};
 use hulyrs::services::{
-    account::AccountClient, jwt::Claims, kvs::KvsClient, transactor::kafka::KafkaEventPublisher,
+    account::AccountClient, jwt::Claims, kvs::KvsClient, transactor::kafka::KafkaProducer,
 };
 
 use redis::{ConnectionInfo, RedisConnectionInfo, aio::MultiplexedConnection};
@@ -14,7 +14,7 @@ use crate::config::hulyrs::SERVICES;
 pub struct GlobalContext {
     kvs: KvsClient,
     account: AccountClient,
-    hulygun: KafkaEventPublisher,
+    hulygun: KafkaProducer,
     limiters: Limiters,
     redis: MultiplexedConnection,
 }
@@ -93,7 +93,7 @@ impl GlobalContext {
         Ok(Self {
             kvs: SERVICES.new_kvs_client(&CONFIG.kvs_namespace, &claims)?,
             account: SERVICES.new_account_client(&claims)?,
-            hulygun: SERVICES.new_kafka_event_publisher(&Coutbound_tx_topic_topic)?,
+            hulygun: SERVICES.new_kafka_publisher(&CONFIG.outbound_tx_topic)?,
             limiters: Limiters::new(),
             redis,
         })
@@ -107,7 +107,7 @@ impl GlobalContext {
         &self.account
     }
 
-    pub fn hulygun(&self) -> &KafkaEventPublisher {
+    pub fn hulygun(&self) -> &KafkaProducer {
         &self.hulygun
     }
 

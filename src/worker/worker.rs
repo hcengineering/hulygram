@@ -19,9 +19,10 @@ use tracing::*;
 
 use super::context::WorkerContext;
 use super::supervisor::WorkerId;
-use super::sync::Sync;
+use super::sync::{ReverseUpdate, Sync};
 use crate::config::CONFIG;
 use crate::context::GlobalContext;
+use crate::worker::sync::context::SyncInfo;
 
 #[derive(Debug)]
 pub enum Message {
@@ -29,6 +30,9 @@ pub enum Message {
 
     #[allow(dead_code)]
     RequestUser(Sender<User>),
+
+    Reverse(SyncInfo, ReverseUpdate),
+
     ProvideCode(String, Sender<WorkerStateResponse>),
     ProvidePassword(String, Sender<WorkerStateResponse>),
     Shutdown,
@@ -285,6 +289,12 @@ impl Worker {
                                 trace!(%phone, "Shutdown requested");
 
                                 break Ok(ExitReason::Shutdown);
+                            }
+
+                            (WorkerState::Authorized(_), Message::Reverse(sync_info, reverse)) => {
+                                if let Err(error) = self.sync.as_ref().expect("sync is not set").handle_reverse_update(sync_info, reverse).await {
+                                    error!(%error, "Error while handling reverse update");
+                                }
                             }
 
                             _ => {

@@ -30,7 +30,7 @@ use crate::{
     worker::sync::state::{BlobDescriptor, HulyMessage},
 };
 
-pub type MessageId = i32;
+pub type MessageId = String;
 
 #[derive(Clone)]
 pub(super) struct Exporter {
@@ -171,7 +171,7 @@ impl Exporter {
         let dry_run = crate::config::CONFIG.dry_run;
 
         let create_message = async || -> Result<MessageId> {
-            let huly_message_id = message.as_huly_message().id;
+            let huly_message_id = message.id().to_string();
 
             let options = CreateMessageOptionsBuilder::default()
                 .no_notify(!notify)
@@ -179,11 +179,11 @@ impl Exporter {
                 .unwrap();
 
             let create_event = CreateMessageEventBuilder::default()
-                .message_id(huly_message_id.to_string())
+                .message_id(&huly_message_id)
                 .message_type(MessageType::Message)
                 .card_id(info.huly_card_id.clone())
                 .card_type("chat:masterTag:Channel")
-                .content(message.markdown_text())
+                .content(message.huly_markdown_text())
                 .social_id(person_id)
                 .date(message.date())
                 .options(options)
@@ -205,13 +205,13 @@ impl Exporter {
         let huly_id = if let Some(grouped_id) = message.grouped_id() {
             if let Some(root_message_id) = self.groups.get(&grouped_id) {
                 // the message is not first in the group, do update
-                if !message.markdown_text().is_empty() {
+                if !message.huly_markdown_text().is_empty() {
                     let patch_event = UpdatePatchEventBuilder::default()
                         .message_id(root_message_id.to_string())
                         .date(message.date())
                         .social_id(person_id)
                         .card_id(&info.huly_card_id)
-                        .content(message.markdown_text())
+                        .content(message.huly_markdown_text())
                         .build()
                         .unwrap();
 
@@ -264,7 +264,10 @@ impl Exporter {
             }
         }
 
-        Ok(message.as_huly_message())
+        Ok(HulyMessage {
+            id: huly_id,
+            date: message.last_date(),
+        })
     }
 
     #[instrument(level = "debug", skip_all)]
@@ -274,13 +277,13 @@ impl Exporter {
         huly_message: HulyMessage,
         telegram_message: &Message,
     ) -> Result<HulyMessage> {
-        if !telegram_message.markdown_text().is_empty() {
+        if !telegram_message.huly_markdown_text().is_empty() {
             let patch_event = UpdatePatchEventBuilder::default()
                 .message_id(huly_message.id.to_string())
                 .date(telegram_message.last_date())
                 .social_id(person_id)
                 .card_id(&self.context.info.huly_card_id)
-                .content(telegram_message.markdown_text())
+                .content(telegram_message.huly_markdown_text())
                 .build()
                 .unwrap();
 
@@ -304,10 +307,10 @@ impl Exporter {
         })
     }
 
-    pub(super) async fn delete(&mut self, huly_id: i32) -> Result<()> {
+    pub(super) async fn delete(&mut self, huly_id: &String) -> Result<()> {
         let patch_event = RemovePatchEventBuilder::default()
             .card_id(&self.context.info.huly_card_id)
-            .message_id(huly_id.to_string())
+            .message_id(huly_id)
             .social_id(&self.context.worker.social_id)
             .date(Utc::now())
             .build()

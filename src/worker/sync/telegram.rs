@@ -1,8 +1,6 @@
 use chrono::{DateTime, Utc};
 use grammers_client::types::{Chat, Message};
 use grammers_tl_types as tl;
-
-use super::state::HulyMessage;
 use hulyrs::services::{
     transactor::person::{EnsurePersonRequest, EnsurePersonRequestBuilder},
     types::SocialIdType,
@@ -10,8 +8,7 @@ use hulyrs::services::{
 
 pub trait MessageExt {
     fn last_date(&self) -> DateTime<Utc>;
-    fn as_huly_message(&self) -> HulyMessage;
-    fn markdown_text(&self) -> String;
+    fn huly_markdown_text(&self) -> String;
 }
 
 impl MessageExt for Message {
@@ -19,14 +16,7 @@ impl MessageExt for Message {
         self.edit_date().unwrap_or_else(|| self.date())
     }
 
-    fn as_huly_message(&self) -> HulyMessage {
-        HulyMessage {
-            id: self.id(),
-            date: self.last_date(),
-        }
-    }
-
-    fn markdown_text(&self) -> String {
+    fn huly_markdown_text(&self) -> String {
         fn entities(message: &Message) -> Option<&Vec<tl::enums::MessageEntity>> {
             match &message.raw {
                 tl::enums::Message::Empty(_) => None,
@@ -46,6 +36,8 @@ impl MessageExt for Message {
 pub trait ChatExt {
     fn is_deleted(&self) -> bool;
     fn global_id(&self) -> String;
+    fn channel_global_id(channel_id: i64) -> String;
+
     fn card_title(&self) -> String;
     fn ensure_person_request(&self) -> EnsurePersonRequest;
 }
@@ -73,8 +65,12 @@ impl ChatExt for Chat {
             Chat::Group(group) => {
                 format!("g{}", group.id())
             }
-            Chat::Channel(channel) => format!("c{}", channel.id()),
+            Chat::Channel(channel) => Self::channel_global_id(channel.id()),
         }
+    }
+
+    fn channel_global_id(channel_id: i64) -> String {
+        format!("c{}", channel_id)
     }
 
     fn ensure_person_request(&self) -> EnsurePersonRequest {

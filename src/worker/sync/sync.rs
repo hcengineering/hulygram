@@ -2,6 +2,8 @@ use std::sync::{Arc, atomic::AtomicU32};
 
 use anyhow::{Result, bail};
 use chrono::TimeDelta;
+use grammers_client::InputMessage;
+use grammers_client::types::Chat;
 use grammers_client::types::Message;
 use multimap::MultiMap;
 use tokio::{
@@ -15,11 +17,13 @@ use tracing::*;
 use super::{
     super::context::WorkerContext,
     context::SyncContext,
+    context::SyncInfo,
     export::Exporter,
     state::{Progress, SyncState},
     telegram::{ChatExt, MessageExt},
 };
 
+use crate::worker::sync::state::HulyMessage;
 use crate::{config::CONFIG, integration::TelegramIntegration};
 
 struct SyncChat {
@@ -27,6 +31,14 @@ struct SyncChat {
     sender_backfill: mpsc::Sender<Arc<ImporterEvent>>,
 
     context: Arc<SyncContext>,
+}
+
+#[derive(Debug)]
+pub enum ReverseUpdate {
+    MessageCreated {
+        huly_message_id: String,
+        content: String,
+    },
 }
 
 #[derive(strum::Display)]
@@ -52,7 +64,7 @@ impl ImporterEvent {
 
 impl SyncChat {
     #[instrument(level = "trace", skip_all)]
-    async fn spawn(context: Arc<SyncContext>) -> Result<(Self, JoinHandle<()>)> {
+    async fn spawn(context: Arc<SyncContext>) -> (Self, JoinHandle<()>) {
         let (sender_backfill, receiver_backfill) = mpsc::channel(1);
         let (sender_realtime, receiver_realtime) = mpsc::channel(16);
 
@@ -62,16 +74,17 @@ impl SyncChat {
                 context.clone(),
                 receiver_backfill,
                 receiver_realtime,
-            ))?;
+            ))
+            .unwrap();
 
-        Ok((
+        (
             SyncChat {
                 sender_realtime,
                 sender_backfill,
                 context,
             },
             export,
-        ))
+        )
     }
 
     #[instrument(level = "debug", name="export", skip_all, fields(chat_id = %context.chat.id(), chat_name = %context.chat.card_title()))]
@@ -168,7 +181,7 @@ impl SyncChat {
                     ImporterEvent::MessageDeleted(messages) => {
                         for message in messages {
                             if let Some(huly_message) = state.get_h_message(*message).await? {
-                                exporter.delete(huly_message.id).await?;
+                                exporter.delete(&huly_message.id).await?;
                             }
                         }
                     }
@@ -270,10 +283,49 @@ impl SyncChat {
 
         debug!("Backfill complete");
     }
+
+    pub async fn handle_reverse_update(&self, update: ReverseUpdate) -> Result<()> {
+        match update {
+            ReverseUpdate::MessageCreated {
+                content,
+                huly_message_id,
+                ..
+            } => {
+                if self
+                    .context
+                    .state
+                    .get_t_message(&huly_message_id)
+                    .await?
+                    .is_none()
+                {
+                    let message = InputMessage::markdown(&content);
+
+                    let message = self
+                        .context
+                        .worker
+                        .telegram
+                        .send_message(self.context.chat.pack(), message)
+                        .await?;
+
+                    let huly_message = HulyMessage {
+                        id: huly_message_id,
+                        date: message.last_date(),
+                    };
+
+                    self.context
+                        .state
+                        .set_message(message.id(), huly_message)
+                        .await?;
+                }
+            }
+        };
+
+        Ok(())
+    }
 }
 
 pub struct Sync {
-    syncs: MultiMap<i64, Arc<SyncChat>>,
+    syncs: MultiMap<String, Arc<SyncChat>>,
     cleanup: Arc<Mutex<Vec<JoinHandle<()>>>>,
     context: Arc<WorkerContext>,
 }
@@ -313,8 +365,6 @@ impl Sync {
         }
 
         for chat in chats {
-            let chat_id = chat.id();
-
             for integration in &mut integrations {
                 match integration.find_channel_config(chat.id()) {
                     // channel is enabled
@@ -334,17 +384,10 @@ impl Sync {
                     SyncContext::new(self.context.clone(), chat.clone(), integration).await?,
                 );
 
-                let sync = SyncChat::spawn(context).await;
+                let (sync, export) = SyncChat::spawn(context).await;
 
-                match sync {
-                    Ok((sync, export)) => {
-                        self.syncs.insert(chat_id, Arc::new(sync));
-                        self.cleanup.lock().await.push(export);
-                    }
-                    Err(error) => {
-                        error!(%error, "Cannot spawn sync for chat {}", chat_id);
-                    }
-                }
+                self.syncs.insert(chat.global_id(), Arc::new(sync));
+                self.cleanup.lock().await.push(export);
             }
         }
 
@@ -430,11 +473,27 @@ impl Sync {
     pub async fn handle_update(&mut self, update: grammers_client::types::Update) -> Result<()> {
         use grammers_client::types::Update;
 
-        match update {
-            Update::NewMessage(message) => {
-                let chat = message.chat().id();
+        fn is_empty(message: &grammers_client::types::update::Message) -> bool {
+            use grammers_tl_types::enums::{Message, Update};
+            use grammers_tl_types::types::{UpdateEditMessage, UpdateNewMessage};
 
-                if let Some(syncs) = self.syncs.get_vec_mut(&chat) {
+            matches!(
+                message.raw,
+                Update::NewMessage(UpdateNewMessage {
+                    message: Message::Empty(_),
+                    ..
+                }) | Update::EditMessage(UpdateEditMessage {
+                    message: Message::Empty(_),
+                    ..
+                })
+            )
+        }
+
+        match update {
+            Update::NewMessage(message) if !is_empty(&message) => {
+                let chat_id = message.chat().global_id();
+
+                if let Some(syncs) = self.syncs.get_vec_mut(&chat_id) {
                     for sync in syncs {
                         let _ = sync
                             .sender_realtime
@@ -444,8 +503,8 @@ impl Sync {
                 }
             }
 
-            Update::MessageEdited(message) => {
-                let chat = message.chat().id();
+            Update::MessageEdited(message) if !is_empty(&message) => {
+                let chat = message.chat().global_id();
 
                 if let Some(syncs) = self.syncs.get_vec_mut(&chat) {
                     for sync in syncs {
@@ -459,7 +518,9 @@ impl Sync {
 
             Update::MessageDeleted(message) => {
                 if let Some(channel_id) = message.channel_id() {
-                    if let Some(syncs) = self.syncs.get_vec_mut(&channel_id) {
+                    if let Some(syncs) =
+                        self.syncs.get_vec_mut(&Chat::channel_global_id(channel_id))
+                    {
                         for sync in syncs {
                             let _ = sync
                                 .sender_realtime
@@ -484,6 +545,27 @@ impl Sync {
 
             _ => {}
         }
+
+        Ok(())
+    }
+
+    pub async fn handle_reverse_update(
+        &self,
+        sync_info: SyncInfo,
+        update: ReverseUpdate,
+    ) -> Result<()> {
+        debug!(?update, "Reverse event");
+
+        let syncs = self.syncs.get_vec(&sync_info.telegram_chat_id);
+
+        if let Some(syncs) = syncs
+            && let Some(sync) = syncs
+                .iter()
+                .find(|sync| sync.context.info.huly_workspace_id == sync_info.huly_workspace_id)
+        {
+            sync.handle_reverse_update(update).await?;
+        }
+        // probably post to other workspaces
 
         Ok(())
     }

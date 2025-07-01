@@ -5,6 +5,7 @@ service_id = "hulygram"
 kvs_namespace = "hulygram"
 outbound_tx_topic = "hulygun"
 inbound_tx_topic = "cockroach.tx"
+inbound_tx_group_id = "hulygram"
 allowed_dialog_ids = "4982993114,4937631480,1044298783,1974697595"
 get_file_rate_limit = 5
 sync_process_limit = 30

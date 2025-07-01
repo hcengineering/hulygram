@@ -1,7 +1,8 @@
 [package]
 name = "hulygram"
-version = "0.2.1"
+version = "0.2.2"
 edition = "2024"
+rust-version = "1.88.0"
 
 [dependencies]
 tokio = { version = "1", features = ["full", "tracing"] }
@@ -14,7 +15,9 @@ actix-web = { version = "4.10.2", features = ["rustls"] }
 actix-cors = "0.7.1"
 phonenumber = "0.3.7"
 thiserror = "2.0.12"
-grammers-client = { git = "https://github.com/aav/grammers" }
+grammers-client = { git = "https://github.com/aav/grammers", features = [
+    "markdown",
+] }
 grammers-mtsender = { git = "https://github.com/aav/grammers" }
 grammers-tl-types = { git = "https://github.com/aav/grammers" }
 
@@ -57,6 +60,11 @@ redis = { version = "0.32.2", features = [
     "tokio-comp",
     "connection-manager",
     "sentinel",
+] }
+rdkafka = { version = "0.37.0", features = [
+    "cmake-build",
+    "ssl-vendored",
+    "tracing",
 ] }
 widestring = "1.2.0"
 

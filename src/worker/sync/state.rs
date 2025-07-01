@@ -21,7 +21,7 @@ pub enum Progress {
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq, Default)]
 pub struct HulyMessage {
-    pub id: i32,
+    pub id: String,
     pub date: DateTime<Utc>,
 }
 
@@ -103,6 +103,14 @@ impl SyncState {
                     })
                     .ok()
             }))
+    }
+
+    pub async fn get_t_message(&self, huly_id: &String) -> Result<Option<i32>> {
+        let mut redis = self.redis.clone();
+
+        Ok(redis
+            .hget::<_, _, Option<i32>>(self.info.with_reverse_prefix("messages"), huly_id)
+            .await?)
     }
 
     pub async fn set_progress(&self, progress: Progress) -> Result<()> {

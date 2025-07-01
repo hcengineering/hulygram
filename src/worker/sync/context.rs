@@ -2,6 +2,7 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use grammers_client::types::Chat;
+use hulyrs::services::kvs::KvsClient;
 use hulyrs::services::{jwt::ClaimsBuilder, transactor::TransactorClient, types::WorkspaceUuid};
 use serde::{Deserialize, Serialize};
 use serde_json as json;
@@ -20,8 +21,7 @@ pub struct SyncInfo {
 
     pub telegram_user_id: i64,
 
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub telegram_phone_number: Option<String>,
+    pub telegram_phone_number: String,
     pub telegram_chat_id: String,
 
     pub huly_card_id: String,
@@ -46,8 +46,8 @@ fn sync_key(workspace: WorkspaceUuid, user: i64, chat: &String) -> String {
     format!("syn_{workspace}:{user}:{chat}")
 }
 
-fn sync_key_ref(info: &SyncInfo) -> String {
-    format!("syn_ref_{}:{}", info.huly_workspace_id, info.huly_card_id)
+fn sync_key_ref(workspace: WorkspaceUuid, card: &String) -> String {
+    format!("syn_ref_{}:{}", workspace, card)
 }
 
 impl SyncContext {
@@ -78,7 +78,7 @@ impl SyncContext {
                 let info = SyncInfo {
                     telegram_user_id: worker.me.id(),
                     telegram_chat_id: chat.global_id(),
-                    telegram_phone_number: worker.me.phone().map(ToOwned::to_owned),
+                    telegram_phone_number: worker.me.phone().unwrap().to_string(),
 
                     huly_workspace_id,
                     huly_card_id: ksuid::Ksuid::generate().to_base62(),
@@ -114,12 +114,36 @@ impl SyncContext {
             self.info.telegram_user_id,
             &self.info.telegram_chat_id,
         );
-        let r#ref = sync_key_ref(&self.info);
+        let ref_key = sync_key_ref(self.info.huly_workspace_id, &self.info.huly_card_id);
 
         kvs.upsert(&key, &json::to_vec(&self.info)?).await?;
-        kvs.upsert(&r#ref, &key.as_bytes()).await?;
+        kvs.upsert(&ref_key, &key.as_bytes()).await?;
 
         Ok(())
+    }
+
+    pub async fn ref_lookup(
+        kvs: &KvsClient,
+        workspace: WorkspaceUuid,
+        card_id: &String,
+    ) -> Result<Option<SyncInfo>> {
+        let ref_key = sync_key_ref(workspace, &card_id);
+
+        let ptr = kvs.get(&ref_key).await?;
+
+        if let Some(ptr) = ptr {
+            let ptr = std::str::from_utf8(&ptr)?;
+
+            let sync_info = kvs
+                .get(ptr)
+                .await?
+                .map(|i| json::from_slice::<SyncInfo>(&i))
+                .transpose()?;
+
+            Ok(sync_info)
+        } else {
+            Ok(None)
+        }
     }
 
     pub fn transactor(&self) -> &TransactorClient {

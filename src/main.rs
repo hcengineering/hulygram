@@ -14,6 +14,7 @@ mod context;
 mod etc;
 mod http;
 mod integration;
+mod reverse;
 mod worker;
 use tikv_jemallocator::Jemalloc;
 
@@ -86,7 +87,9 @@ async fn main() -> anyhow::Result<()> {
     let supervisor = worker::new_supervisor(context.clone())?;
     supervisor.spawn_all().await?;
 
-    let (http, abort_http) = http::spawn(supervisor.clone(), context)?;
+    let (http, abort_http) = http::spawn(supervisor.clone(), context.clone())?;
+
+    reverse::start(supervisor.clone(), context.clone())?;
 
     let mut term = signal(SignalKind::terminate())?;
 
