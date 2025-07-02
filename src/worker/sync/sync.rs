@@ -554,8 +554,6 @@ impl Sync {
         sync_info: SyncInfo,
         update: ReverseUpdate,
     ) -> Result<()> {
-        debug!(?update, "Reverse event");
-
         let syncs = self.syncs.get_vec(&sync_info.telegram_chat_id);
 
         if let Some(syncs) = syncs
