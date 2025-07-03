@@ -3,7 +3,10 @@ use std::sync::Arc;
 use anyhow::Result;
 use hulyrs::services::transactor::{
     TransactionValue,
-    comm::{CreateMessageEvent, Envelope, MessageRequestType, MessageType, UpdatePatchEvent},
+    comm::{
+        CreateMessageEvent, Envelope, MessageRequestType, MessageType, RemovePatchEvent,
+        UpdatePatchEvent,
+    },
     kafka::parse_message,
     tx::TxDomainEvent,
 };
@@ -112,6 +115,23 @@ pub fn start(
                                 ReverseUpdate::MessageUpdated {
                                     huly_message_id: patch.message_id,
                                     content: patch.content,
+                                },
+                            ))
+                            .await?;
+
+                        //
+                    }
+                }
+
+                MessageRequestType::RemovePatch => {
+                    let patch = json::from_value::<RemovePatchEvent>(domain_event.event.request)?;
+
+                    if let Some((worker, sync_info)) = acquire_worker(&patch.card_id).await? {
+                        worker
+                            .send(Message::Reverse(
+                                sync_info,
+                                ReverseUpdate::MessageDeleted {
+                                    huly_message_id: patch.message_id,
                                 },
                             ))
                             .await?;

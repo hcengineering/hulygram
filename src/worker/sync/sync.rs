@@ -25,6 +25,7 @@ use super::{
 };
 
 use crate::worker::sync::state::HulyMessage;
+use crate::worker::sync::telegram;
 use crate::{config::CONFIG, integration::TelegramIntegration};
 
 struct SyncChat {
@@ -45,6 +46,10 @@ pub enum ReverseUpdate {
         huly_message_id: String,
         content: String,
     },
+
+    MessageDeleted {
+        huly_message_id: String,
+    },
 }
 
 impl ReverseUpdate {
@@ -56,6 +61,8 @@ impl ReverseUpdate {
             ReverseUpdate::MessageUpdated {
                 huly_message_id, ..
             } => huly_message_id,
+
+            ReverseUpdate::MessageDeleted { huly_message_id } => huly_message_id,
         }
     }
 }
@@ -313,6 +320,7 @@ impl SyncChat {
         telegram_id: Option<i32>,
     ) -> Result<Option<i32>> {
         let chat = self.context.chat.pack();
+        let telegram = &self.context.worker.telegram;
 
         let message_id = match update {
             ReverseUpdate::MessageCreated {
@@ -323,12 +331,7 @@ impl SyncChat {
                 if telegram_id.is_none() {
                     let message = InputMessage::markdown(&content);
 
-                    let message = self
-                        .context
-                        .worker
-                        .telegram
-                        .send_message(chat, message)
-                        .await?;
+                    let message = telegram.send_message(chat, message).await?;
 
                     let huly_message = HulyMessage {
                         id: huly_message_id,
@@ -340,7 +343,7 @@ impl SyncChat {
                         .set_message(message.id(), huly_message)
                         .await?;
 
-                    Some(message.id())
+                    None
                 } else {
                     None
                 }
@@ -350,16 +353,22 @@ impl SyncChat {
                 if let Some(telegram_message_id) = telegram_id {
                     let message = InputMessage::markdown(&content);
 
-                    self.context
-                        .worker
-                        .telegram
+                    telegram
                         .edit_message(chat, telegram_message_id, message)
                         .await?;
-
-                    Some(telegram_message_id)
-                } else {
-                    None
                 }
+
+                telegram_id
+            }
+
+            ReverseUpdate::MessageDeleted { .. } => {
+                if let Some(telegram_message_id) = telegram_id {
+                    telegram
+                        .delete_messages(chat, &[telegram_message_id])
+                        .await?;
+                }
+
+                None
             }
         };
 
@@ -371,7 +380,7 @@ pub struct Sync {
     syncs: MultiMap<String, Arc<SyncChat>>,
     cleanup: Arc<Mutex<Vec<JoinHandle<()>>>>,
     context: Arc<WorkerContext>,
-    breaker: Mutex<HashSet<(String, i32)>>,
+    debouncer: Mutex<HashSet<(String, i32)>>,
 }
 
 impl Sync {
@@ -380,7 +389,7 @@ impl Sync {
             context,
             syncs: MultiMap::new(),
             cleanup: Arc::default(),
-            breaker: Mutex::default(),
+            debouncer: Mutex::default(),
         }
     }
 
@@ -518,20 +527,34 @@ impl Sync {
     pub async fn handle_update(&mut self, update: grammers_client::types::Update) -> Result<()> {
         use grammers_client::types::Update;
 
-        let mut breaker = self.breaker.lock().await;
+        let mut debouncer = self.debouncer.lock().await;
+
+        fn is_empty(message: &grammers_client::types::update::Message) -> bool {
+            use grammers_tl_types::enums::{Message, Update};
+            use grammers_tl_types::types::{UpdateEditMessage, UpdateNewMessage};
+
+            matches!(
+                message.raw,
+                Update::NewMessage(UpdateNewMessage {
+                    message: Message::Empty(_),
+                    ..
+                }) | Update::EditMessage(UpdateEditMessage {
+                    message: Message::Empty(_),
+                    ..
+                })
+            )
+        }
 
         match update {
-            Update::NewMessage(message) => {
+            Update::NewMessage(message) if !is_empty(&message) => {
                 let chat_id = message.chat().global_id();
 
-                if !breaker.remove(&(chat_id.clone(), message.id())) {
-                    if let Some(syncs) = self.syncs.get_vec_mut(&chat_id) {
-                        for sync in syncs {
-                            let _ = sync
-                                .sender_realtime
-                                .send(Arc::new(ImporterEvent::NewMessage((*message).clone())))
-                                .await;
-                        }
+                if let Some(syncs) = self.syncs.get_vec_mut(&chat_id) {
+                    for sync in syncs {
+                        let _ = sync
+                            .sender_realtime
+                            .send(Arc::new(ImporterEvent::NewMessage((*message).clone())))
+                            .await;
                     }
                 }
             }
@@ -539,7 +562,7 @@ impl Sync {
             Update::MessageEdited(message) => {
                 let chat_id = message.chat().global_id();
 
-                if !breaker.remove(&(chat_id.clone(), message.id())) {
+                if !debouncer.remove(&(chat_id.clone(), message.id())) {
                     if let Some(syncs) = self.syncs.get_vec_mut(&chat_id) {
                         for sync in syncs {
                             let _ = sync
@@ -549,16 +572,28 @@ impl Sync {
                         }
                     }
 
-                    breaker.insert((chat_id.clone(), message.id()));
+                    debouncer.insert((chat_id.clone(), message.id()));
                 }
             }
 
             Update::MessageDeleted(message) => {
-                if let Some(channel_id) = message.channel_id() {
-                    if let Some(syncs) =
-                        self.syncs.get_vec_mut(&Chat::channel_global_id(channel_id))
-                    {
-                        for sync in syncs {
+                if !message.messages().is_empty() {
+                    if let Some(channel_id) = message.channel_id() {
+                        if let Some(syncs) =
+                            self.syncs.get_vec_mut(&Chat::channel_global_id(channel_id))
+                        {
+                            for sync in syncs {
+                                let _ = sync
+                                    .sender_realtime
+                                    .send(Arc::new(ImporterEvent::MessageDeleted(
+                                        message.messages().to_vec(),
+                                    )))
+                                    .await;
+                            }
+                        }
+                    } else {
+                        // have iterate over all syncs :(
+                        for (_, sync) in self.syncs.flat_iter_mut() {
                             let _ = sync
                                 .sender_realtime
                                 .send(Arc::new(ImporterEvent::MessageDeleted(
@@ -566,16 +601,6 @@ impl Sync {
                                 )))
                                 .await;
                         }
-                    }
-                } else {
-                    // have iterate over all syncs :(
-                    for (_, sync) in self.syncs.flat_iter_mut() {
-                        let _ = sync
-                            .sender_realtime
-                            .send(Arc::new(ImporterEvent::MessageDeleted(
-                                message.messages().to_vec(),
-                            )))
-                            .await;
                     }
                 }
             }
@@ -591,7 +616,7 @@ impl Sync {
         sync_info: SyncInfo,
         update: ReverseUpdate,
     ) -> Result<()> {
-        let mut breaker = self.breaker.lock().await;
+        let mut debouncer = self.debouncer.lock().await;
         let syncs = self.syncs.get_vec(&sync_info.telegram_chat_id);
 
         if let Some(syncs) = syncs
@@ -602,10 +627,10 @@ impl Sync {
             let telegram_id = sync.get_t_message(update.huly_message_id()).await?;
 
             if telegram_id.is_none()
-                || !breaker.remove(&(sync_info.telegram_chat_id.clone(), telegram_id.unwrap()))
+                || !debouncer.remove(&(sync_info.telegram_chat_id.clone(), telegram_id.unwrap()))
             {
                 if let Some(id) = sync.handle_reverse_update(update, telegram_id).await? {
-                    breaker.insert((sync_info.telegram_chat_id.clone(), id));
+                    debouncer.insert((sync_info.telegram_chat_id.clone(), id));
                 }
             }
         }
