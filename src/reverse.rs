@@ -3,7 +3,7 @@ use std::sync::Arc;
 use anyhow::Result;
 use hulyrs::services::transactor::{
     TransactionValue,
-    comm::{CreateMessageEvent, Envelope, MessageRequestType},
+    comm::{CreateMessageEvent, Envelope, MessageRequestType, MessageType},
     kafka::parse_message,
     tx::TxDomainEvent,
 };
@@ -66,25 +66,31 @@ pub fn start(
                     let create_message =
                         json::from_value::<CreateMessageEvent>(domain_event.event.request)?;
 
-                    let sync_info =
-                        SyncContext::ref_lookup(&context.kvs(), workspace, &create_message.card_id)
-                            .await?;
+                    if matches!(create_message.message_type, MessageType::Message) {
+                        let sync_info = SyncContext::ref_lookup(
+                            &context.kvs(),
+                            workspace,
+                            &create_message.card_id,
+                        )
+                        .await?;
 
-                    if let Some(sync_info) = sync_info {
-                        let hints = WorkerHintsBuilder::default().support_auth(false).build()?;
+                        if let Some(sync_info) = sync_info {
+                            let hints =
+                                WorkerHintsBuilder::default().support_auth(false).build()?;
 
-                        let phone = &sync_info.telegram_phone_number;
-                        let worker = supervisor.spawn_worker(phone, hints).await;
+                            let phone = &sync_info.telegram_phone_number;
+                            let worker = supervisor.spawn_worker(phone, hints).await;
 
-                        worker
-                            .send(Message::Reverse(
-                                sync_info,
-                                ReverseUpdate::MessageCreated {
-                                    huly_message_id: create_message.message_id.unwrap(),
-                                    content: create_message.content,
-                                },
-                            ))
-                            .await?;
+                            worker
+                                .send(Message::Reverse(
+                                    sync_info,
+                                    ReverseUpdate::MessageCreated {
+                                        huly_message_id: create_message.message_id.unwrap(),
+                                        content: create_message.content,
+                                    },
+                                ))
+                                .await?;
+                        }
                     }
                 }
 
