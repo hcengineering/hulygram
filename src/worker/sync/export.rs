@@ -21,7 +21,7 @@ use tracing::*;
 use super::{
     context::SyncContext,
     media::MediaTransfer,
-    telegram::{ChatExt, MessageExt},
+    telegram::{EnsurePersonRequestExt, MessageExt},
     tx::TransactorExt,
 };
 use crate::{
@@ -122,22 +122,20 @@ impl Exporter {
 
     #[instrument(level = "trace", skip_all)]
     pub async fn ensure_person(&mut self, message: &Message) -> Result<PersonId> {
-        let chat = match self.context.chat.as_ref() {
+        let request = match message.chat() {
             Chat::User(_) => {
                 if message.outgoing() {
-                    message.sender().unwrap()
+                    self.context.worker.me.ensure_person_request()
                 } else {
-                    message.chat()
+                    message.chat().ensure_person_request()
                 }
             }
 
-            _ => {
-                //
-                message.sender().unwrap_or_else(|| message.chat())
-            }
+            _ => message
+                .sender()
+                .unwrap_or_else(|| message.chat())
+                .ensure_person_request(),
         };
-
-        let request = chat.ensure_person_request();
 
         let mut redis = self.global_context.redis();
 

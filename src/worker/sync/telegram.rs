@@ -1,5 +1,5 @@
 use chrono::{DateTime, Utc};
-use grammers_client::types::{Chat, Message};
+use grammers_client::types::{Chat, Message, User};
 use grammers_tl_types as tl;
 use hulyrs::services::{
     transactor::person::{EnsurePersonRequest, EnsurePersonRequestBuilder},
@@ -39,6 +39,9 @@ pub trait ChatExt {
     fn channel_global_id(channel_id: i64) -> String;
 
     fn card_title(&self) -> String;
+}
+
+pub trait EnsurePersonRequestExt {
     fn ensure_person_request(&self) -> EnsurePersonRequest;
 }
 
@@ -72,24 +75,41 @@ impl ChatExt for Chat {
     fn channel_global_id(channel_id: i64) -> String {
         format!("c{}", channel_id)
     }
+}
 
+impl EnsurePersonRequestExt for Chat {
     fn ensure_person_request(&self) -> EnsurePersonRequest {
-        fn names(chat: &Chat) -> (String, Option<String>) {
-            match chat {
-                Chat::User(user) => (
-                    user.first_name()
-                        .map(ToString::to_string)
-                        .unwrap_or("Deleted User".to_string()),
-                    user.last_name().map(ToOwned::to_owned),
-                ),
+        let mut builder = EnsurePersonRequestBuilder::default();
 
-                Chat::Channel(channel) => (channel.title().to_owned(), None),
+        builder
+            .social_type(SocialIdType::Telegram)
+            .social_value(self.id().to_string());
 
-                Chat::Group(group) => (group.title().unwrap_or("Telegram Group").to_owned(), None),
+        match self {
+            Chat::User(user) => {
+                return user.ensure_person_request();
+            }
+
+            Chat::Channel(channel) => {
+                builder.first_name(channel.title().to_owned());
+            }
+
+            Chat::Group(group) => {
+                builder.first_name(group.title().unwrap_or("Telegram Group").to_owned());
             }
         }
 
-        let (first_name, last_name) = names(self);
+        builder.build().unwrap()
+    }
+}
+
+impl EnsurePersonRequestExt for User {
+    fn ensure_person_request(&self) -> EnsurePersonRequest {
+        let first_name = self
+            .first_name()
+            .map(ToString::to_string)
+            .unwrap_or("Deleted User".to_string());
+        let last_name = self.last_name().map(ToOwned::to_owned);
 
         EnsurePersonRequestBuilder::default()
             .first_name(first_name)
