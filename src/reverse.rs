@@ -3,7 +3,7 @@ use std::sync::Arc;
 use anyhow::Result;
 use hulyrs::services::transactor::{
     TransactionValue,
-    comm::{CreateMessageEvent, Envelope, MessageRequestType, MessageType},
+    comm::{CreateMessageEvent, Envelope, MessageRequestType, MessageType, UpdatePatchEvent},
     kafka::parse_message,
     tx::TxDomainEvent,
 };
@@ -18,7 +18,10 @@ use tracing::*;
 use crate::{
     config::{CONFIG, hulyrs::CONFIG as hconfig},
     context::GlobalContext,
-    worker::{Message, SyncContext, WorkerHintsBuilder, sync::ReverseUpdate},
+    worker::{
+        Message, SyncContext, WorkerHintsBuilder,
+        sync::{ReverseUpdate, SyncInfo},
+    },
 };
 
 pub fn create_consumer(topic: &str) -> Result<StreamConsumer> {
@@ -57,6 +60,22 @@ pub fn start(
     ) -> Result<()> {
         let (workspace, transaction) = parse_message(message)?;
 
+        let acquire_worker =
+            async |card_id| -> Result<Option<(tokio::sync::mpsc::Sender<Message>, SyncInfo)>> {
+                let sync_info = SyncContext::ref_lookup(&context.kvs(), workspace, card_id).await?;
+
+                let result = if let Some(sync_info) = sync_info {
+                    let hints = WorkerHintsBuilder::default().support_auth(false).build()?;
+
+                    let phone = &sync_info.telegram_phone_number;
+                    Some((supervisor.spawn_worker(phone, hints).await, sync_info))
+                } else {
+                    None
+                };
+
+                Ok(result)
+            };
+
         if transaction.matches(Some("core:class:TxDomainEvent"), Some("communication")) {
             let domain_event =
                 json::from_value::<TxDomainEvent<Envelope<Value>>>(transaction).unwrap();
@@ -67,20 +86,9 @@ pub fn start(
                         json::from_value::<CreateMessageEvent>(domain_event.event.request)?;
 
                     if matches!(create_message.message_type, MessageType::Message) {
-                        let sync_info = SyncContext::ref_lookup(
-                            &context.kvs(),
-                            workspace,
-                            &create_message.card_id,
-                        )
-                        .await?;
-
-                        if let Some(sync_info) = sync_info {
-                            let hints =
-                                WorkerHintsBuilder::default().support_auth(false).build()?;
-
-                            let phone = &sync_info.telegram_phone_number;
-                            let worker = supervisor.spawn_worker(phone, hints).await;
-
+                        if let Some((worker, sync_info)) =
+                            acquire_worker(&create_message.card_id).await?
+                        {
                             worker
                                 .send(Message::Reverse(
                                     sync_info,
@@ -91,6 +99,24 @@ pub fn start(
                                 ))
                                 .await?;
                         }
+                    }
+                }
+
+                MessageRequestType::UpdatePatch => {
+                    let patch = json::from_value::<UpdatePatchEvent>(domain_event.event.request)?;
+
+                    if let Some((worker, sync_info)) = acquire_worker(&patch.card_id).await? {
+                        worker
+                            .send(Message::Reverse(
+                                sync_info,
+                                ReverseUpdate::MessageUpdated {
+                                    huly_message_id: patch.message_id,
+                                    content: patch.content,
+                                },
+                            ))
+                            .await?;
+
+                        //
                     }
                 }
 

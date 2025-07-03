@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::sync::{Arc, atomic::AtomicU32};
 
 use anyhow::{Result, bail};
@@ -39,6 +40,24 @@ pub enum ReverseUpdate {
         huly_message_id: String,
         content: String,
     },
+
+    MessageUpdated {
+        huly_message_id: String,
+        content: String,
+    },
+}
+
+impl ReverseUpdate {
+    pub fn huly_message_id(&self) -> &String {
+        match self {
+            ReverseUpdate::MessageCreated {
+                huly_message_id, ..
+            } => huly_message_id,
+            ReverseUpdate::MessageUpdated {
+                huly_message_id, ..
+            } => huly_message_id,
+        }
+    }
 }
 
 #[derive(strum::Display)]
@@ -284,27 +303,31 @@ impl SyncChat {
         debug!("Backfill complete");
     }
 
-    pub async fn handle_reverse_update(&self, update: ReverseUpdate) -> Result<()> {
-        match update {
+    pub async fn get_t_message(&self, huly_message_id: &String) -> Result<Option<i32>> {
+        self.context.state.get_t_message(huly_message_id).await
+    }
+
+    pub async fn handle_reverse_update(
+        &self,
+        update: ReverseUpdate,
+        telegram_id: Option<i32>,
+    ) -> Result<Option<i32>> {
+        let chat = self.context.chat.pack();
+
+        let message_id = match update {
             ReverseUpdate::MessageCreated {
                 content,
                 huly_message_id,
                 ..
             } => {
-                if self
-                    .context
-                    .state
-                    .get_t_message(&huly_message_id)
-                    .await?
-                    .is_none()
-                {
+                if telegram_id.is_none() {
                     let message = InputMessage::markdown(&content);
 
                     let message = self
                         .context
                         .worker
                         .telegram
-                        .send_message(self.context.chat.pack(), message)
+                        .send_message(chat, message)
                         .await?;
 
                     let huly_message = HulyMessage {
@@ -316,11 +339,31 @@ impl SyncChat {
                         .state
                         .set_message(message.id(), huly_message)
                         .await?;
+
+                    Some(message.id())
+                } else {
+                    None
+                }
+            }
+
+            ReverseUpdate::MessageUpdated { content, .. } => {
+                if let Some(telegram_message_id) = telegram_id {
+                    let message = InputMessage::markdown(&content);
+
+                    self.context
+                        .worker
+                        .telegram
+                        .edit_message(chat, telegram_message_id, message)
+                        .await?;
+
+                    Some(telegram_message_id)
+                } else {
+                    None
                 }
             }
         };
 
-        Ok(())
+        Ok(message_id)
     }
 }
 
@@ -328,6 +371,7 @@ pub struct Sync {
     syncs: MultiMap<String, Arc<SyncChat>>,
     cleanup: Arc<Mutex<Vec<JoinHandle<()>>>>,
     context: Arc<WorkerContext>,
+    breaker: Mutex<HashSet<(String, i32)>>,
 }
 
 impl Sync {
@@ -336,6 +380,7 @@ impl Sync {
             context,
             syncs: MultiMap::new(),
             cleanup: Arc::default(),
+            breaker: Mutex::default(),
         }
     }
 
@@ -473,46 +518,38 @@ impl Sync {
     pub async fn handle_update(&mut self, update: grammers_client::types::Update) -> Result<()> {
         use grammers_client::types::Update;
 
-        fn is_empty(message: &grammers_client::types::update::Message) -> bool {
-            use grammers_tl_types::enums::{Message, Update};
-            use grammers_tl_types::types::{UpdateEditMessage, UpdateNewMessage};
-
-            matches!(
-                message.raw,
-                Update::NewMessage(UpdateNewMessage {
-                    message: Message::Empty(_),
-                    ..
-                }) | Update::EditMessage(UpdateEditMessage {
-                    message: Message::Empty(_),
-                    ..
-                })
-            )
-        }
+        let mut breaker = self.breaker.lock().await;
 
         match update {
-            Update::NewMessage(message) if !is_empty(&message) => {
+            Update::NewMessage(message) => {
                 let chat_id = message.chat().global_id();
 
-                if let Some(syncs) = self.syncs.get_vec_mut(&chat_id) {
-                    for sync in syncs {
-                        let _ = sync
-                            .sender_realtime
-                            .send(Arc::new(ImporterEvent::NewMessage((*message).clone())))
-                            .await;
+                if !breaker.remove(&(chat_id.clone(), message.id())) {
+                    if let Some(syncs) = self.syncs.get_vec_mut(&chat_id) {
+                        for sync in syncs {
+                            let _ = sync
+                                .sender_realtime
+                                .send(Arc::new(ImporterEvent::NewMessage((*message).clone())))
+                                .await;
+                        }
                     }
                 }
             }
 
-            Update::MessageEdited(message) if !is_empty(&message) => {
-                let chat = message.chat().global_id();
+            Update::MessageEdited(message) => {
+                let chat_id = message.chat().global_id();
 
-                if let Some(syncs) = self.syncs.get_vec_mut(&chat) {
-                    for sync in syncs {
-                        let _ = sync
-                            .sender_realtime
-                            .send(Arc::new(ImporterEvent::MessageEdited((*message).clone())))
-                            .await;
+                if !breaker.remove(&(chat_id.clone(), message.id())) {
+                    if let Some(syncs) = self.syncs.get_vec_mut(&chat_id) {
+                        for sync in syncs {
+                            let _ = sync
+                                .sender_realtime
+                                .send(Arc::new(ImporterEvent::MessageEdited((*message).clone())))
+                                .await;
+                        }
                     }
+
+                    breaker.insert((chat_id.clone(), message.id()));
                 }
             }
 
@@ -554,6 +591,7 @@ impl Sync {
         sync_info: SyncInfo,
         update: ReverseUpdate,
     ) -> Result<()> {
+        let mut breaker = self.breaker.lock().await;
         let syncs = self.syncs.get_vec(&sync_info.telegram_chat_id);
 
         if let Some(syncs) = syncs
@@ -561,7 +599,15 @@ impl Sync {
                 .iter()
                 .find(|sync| sync.context.info.huly_workspace_id == sync_info.huly_workspace_id)
         {
-            sync.handle_reverse_update(update).await?;
+            let telegram_id = sync.get_t_message(update.huly_message_id()).await?;
+
+            if telegram_id.is_none()
+                || !breaker.remove(&(sync_info.telegram_chat_id.clone(), telegram_id.unwrap()))
+            {
+                if let Some(id) = sync.handle_reverse_update(update, telegram_id).await? {
+                    breaker.insert((sync_info.telegram_chat_id.clone(), id));
+                }
+            }
         }
         // probably post to other workspaces
 
