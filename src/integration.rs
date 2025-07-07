@@ -27,7 +27,6 @@ pub struct AccountIntegrationData {
 
 #[derive(Clone)]
 pub struct WorkspaceIntegration {
-    pub is_modified: bool,
     pub data: IntegrationData,
     pub workspace_id: WorkspaceUuid,
     pub social_id: SocialIdId,
@@ -39,16 +38,11 @@ pub struct WorkspaceIntegration {
 pub struct IntegrationData {
     #[serde(default)]
     pub config: Config,
-    // #[serde(default)]
-    // pub mappings: Vec<ChannelMapping>,
 }
 
 #[derive(Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct Config {
-    #[serde(default)]
-    pub sync_all: bool,
-
     #[serde(default)]
     pub channels: Vec<ChannelConfig>,
 }
@@ -56,7 +50,6 @@ pub struct Config {
 impl Default for Config {
     fn default() -> Self {
         Self {
-            sync_all: true,
             channels: Vec::default(),
         }
     }
@@ -77,7 +70,7 @@ pub struct ChannelConfig {
 }
 
 impl WorkspaceIntegration {
-    pub fn find_channel_config(&self, telegram_id: i64) -> Option<&ChannelConfig> {
+    pub fn find_config(&self, telegram_id: i64) -> Option<&ChannelConfig> {
         self.data
             .config
             .channels
@@ -102,8 +95,6 @@ pub trait TelegramIntegration {
         social_id: &PersonId,
         data: AccountIntegrationData,
     ) -> Result<()>;
-
-    async fn update_workspace_integration(&self, data: &WorkspaceIntegration) -> Result<()>;
 
     async fn ensure_workspace_integration(
         &self,
@@ -271,7 +262,6 @@ impl TelegramIntegration for AccountClient {
                 };
 
                 Ok(WorkspaceIntegration {
-                    is_modified: false,
                     data,
                     workspace_id,
                     social_id: integration.social_id,
@@ -371,10 +361,8 @@ impl TelegramIntegration for AccountClient {
         {
             let data = IntegrationData {
                 config: Config {
-                    sync_all: true,
                     channels: Vec::default(),
                 },
-                //  mappings: Vec::default(),
             };
 
             let workspace = Integration {
@@ -386,19 +374,6 @@ impl TelegramIntegration for AccountClient {
 
             self.create_integration(&workspace).await?;
         }
-
-        Ok(())
-    }
-
-    async fn update_workspace_integration(&self, integration: &WorkspaceIntegration) -> Result<()> {
-        let integration = Integration {
-            social_id: integration.social_id.clone(),
-            kind: INTEGRATION_KIND.to_string(),
-            workspace_uuid: Some(integration.workspace_id),
-            data: Some(json::to_value(integration.data.clone())?),
-        };
-
-        self.update_integration(&integration).await?;
 
         Ok(())
     }

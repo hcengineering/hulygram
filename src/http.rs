@@ -84,8 +84,9 @@ pub fn spawn(
                 web::scope("/api")
                     .wrap(middleware::from_fn(interceptor))
                     .route("/integrations/", web::get().to(enumerate))
-                    .route("/integrations/{number}", web::get().to(get))
-                    .route("/integrations/{number}", web::post().to(command)),
+                    .route("/integrations/{number}", web::get().to(get_state))
+                    .route("/integrations/{number}", web::post().to(command))
+                    .route("/integrations/{number}/chats", web::get().to(get_chats)),
             )
             .route("/push/{number}", web::put().to(push))
             .route("/push/{number}", web::post().to(push))
@@ -222,7 +223,7 @@ async fn enumerate(
     Ok(Json(integrations))
 }
 
-async fn get(
+async fn get_state(
     request: HttpRequest,
     phone: Path<String>,
     services: Data<Arc<GlobalContext>>,
@@ -255,6 +256,46 @@ async fn get(
         trace!(%phone, ?response, "Get request");
 
         Ok(response)
+    } else {
+        trace!(%phone, "Integration not found");
+
+        Ok(HttpResponse::NotFound().finish())
+    }
+}
+
+async fn get_chats(
+    request: HttpRequest,
+    phone: Path<String>,
+    services: Data<Arc<GlobalContext>>,
+    supervisor: Data<Arc<Supervisor>>,
+) -> HandlerResult<HttpResponse> {
+    let phone = normalize_phone_number(&phone)?;
+    let services = services.to_owned();
+
+    let claims = request.extensions().get::<Claims>().unwrap().to_owned();
+
+    let integration = services
+        .account()
+        .find_account_integrations(&claims)
+        .await?
+        .into_iter()
+        .find(|i| i.phone == phone);
+
+    if let Some(integration) = integration {
+        let hints = WorkerHintsBuilder::default()
+            .support_auth(false)
+            .build()
+            .unwrap();
+
+        let worker = supervisor.spawn_worker(&integration.phone, hints).await;
+
+        if let Ok(workspace) = claims.workspace() {
+            let chats = worker.request_chats(workspace).await??;
+
+            Ok(HttpResponse::Ok().json(chats))
+        } else {
+            Ok(HttpResponse::Forbidden().finish())
+        }
     } else {
         trace!(%phone, "Integration not found");
 

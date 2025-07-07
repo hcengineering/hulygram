@@ -3,10 +3,12 @@ use std::{sync::Arc, time::Duration};
 use anyhow::Result;
 use grammers_client::grammers_tl_types::functions::account::RegisterDevice;
 use grammers_client::{
-    Client, Config, InitParams,
+    Client as TelegramClient, Config, InitParams,
     session::Session,
     types::{LoginToken, PasswordToken, User},
 };
+use hulyrs::services::types::WorkspaceUuid;
+use serde::Serialize;
 use tokio::{
     select,
     sync::{
@@ -19,14 +21,19 @@ use tracing::*;
 
 use super::context::WorkerContext;
 use super::supervisor::WorkerId;
-use super::sync::{ReverseUpdate, Sync};
+use super::sync::{
+    ReverseUpdate, Sync,
+    telegram::{ChatExt, ChatType},
+};
 use crate::config::CONFIG;
 use crate::context::GlobalContext;
-use crate::worker::sync::context::SyncInfo;
+use crate::worker::sync::{SyncMode, context::SyncInfo};
 
 #[derive(Debug)]
-pub enum Message {
+pub enum WorkerRequest {
     RequestState(Sender<WorkerStateResponse>),
+
+    RequestChannels(WorkspaceUuid, Sender<Result<Vec<ChatEntry>>>),
 
     #[allow(dead_code)]
     RequestUser(Sender<User>),
@@ -45,33 +52,61 @@ pub enum WorkerStateResponse {
     WantPassword(Option<String>),
 }
 
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChatEntry {
+    id: String,
+    name: String,
+
+    #[serde(rename = "type")]
+    chat_type: ChatType,
+
+    mode: SyncMode,
+}
+
 pub trait WorkerAccess {
     async fn request_state(&self) -> Result<WorkerStateResponse>;
+    async fn request_chats(&self, workspace: WorkspaceUuid) -> Result<Result<Vec<ChatEntry>>>;
     async fn provide_code(&self, code: String) -> Result<WorkerStateResponse>;
     async fn provide_password(&self, code: String) -> Result<WorkerStateResponse>;
 }
 
-impl WorkerAccess for mpsc::Sender<Message> {
+trait RequestTimeout: Future {
+    async fn timeout(self) -> Result<Self::Output>
+    where
+        Self: Sized,
+    {
+        Ok(time::timeout(Duration::from_secs(2), self).await?)
+    }
+}
+
+impl<T: Future> RequestTimeout for T {}
+
+impl WorkerAccess for mpsc::Sender<WorkerRequest> {
     async fn request_state(&self) -> Result<WorkerStateResponse> {
-        // FIXME handle request timeout
         let (sender, receiver) = channel();
-        self.send(Message::RequestState(sender)).await?;
-        Ok(receiver.await?)
+        self.send(WorkerRequest::RequestState(sender)).await?;
+        Ok(receiver.timeout().await??)
+    }
+
+    async fn request_chats(&self, workspace: WorkspaceUuid) -> Result<Result<Vec<ChatEntry>>> {
+        let (sender, receiver) = channel();
+        self.send(WorkerRequest::RequestChannels(workspace, sender))
+            .await?;
+        Ok(receiver.timeout().await??)
     }
 
     async fn provide_code(&self, code: String) -> Result<WorkerStateResponse> {
-        // FIXME handle request timeout
         let (sender, receiver) = channel();
-        self.send(Message::ProvideCode(code, sender)).await?;
-        Ok(receiver.await?)
+        self.send(WorkerRequest::ProvideCode(code, sender)).await?;
+        Ok(receiver.timeout().await??)
     }
 
     async fn provide_password(&self, password: String) -> Result<WorkerStateResponse> {
-        // FIXME handle request timeout
         let (sender, receiver) = channel();
-        self.send(Message::ProvidePassword(password, sender))
+        self.send(WorkerRequest::ProvidePassword(password, sender))
             .await?;
-        Ok(receiver.await?)
+        Ok(receiver.timeout().await??)
     }
 }
 
@@ -90,7 +125,7 @@ pub struct WorkerConfig {
     pub phone: String,
     pub hints: WorkerHints,
 
-    pub _self_sender: mpsc::Sender<Message>,
+    pub _self_sender: mpsc::Sender<WorkerRequest>,
 }
 
 #[derive(strum::Display, derive_more::IsVariant)]
@@ -103,7 +138,7 @@ pub(super) enum WorkerState {
 pub struct Worker {
     pub id: WorkerId,
     pub config: Arc<WorkerConfig>,
-    pub client: Client,
+    pub telegram: TelegramClient,
     session_key: String,
     sync: Option<Sync>,
     global_context: Arc<GlobalContext>,
@@ -137,7 +172,7 @@ impl Worker {
             Session::new()
         };
 
-        let client = Client::connect(Config {
+        let telegram = TelegramClient::connect(Config {
             session,
             api_id: CONFIG.telegram_api_id,
             api_hash: CONFIG.telegram_api_hash.clone(),
@@ -150,7 +185,7 @@ impl Worker {
         Ok(Self {
             id: config.id.clone(),
             config,
-            client,
+            telegram,
             session_key,
             sync: None,
             global_context,
@@ -161,7 +196,7 @@ impl Worker {
         Ok(self
             .global_context
             .kvs()
-            .upsert(&self.session_key, &self.client.session().save())
+            .upsert(&self.session_key, &self.telegram.session().save())
             .await?)
     }
 
@@ -175,10 +210,10 @@ impl Worker {
         }
     }
 
-    pub async fn run(mut self, inbox: &mut mpsc::Receiver<Message>) -> ExitReason {
+    pub async fn run(mut self, inbox: &mut mpsc::Receiver<WorkerRequest>) -> ExitReason {
         let result = self.run0(inbox).await;
 
-        if self.client.is_authorized().await.unwrap_or(false) {
+        if self.telegram.is_authorized().await.unwrap_or(false) {
             let _ = self.persist_session().await;
         }
 
@@ -189,7 +224,7 @@ impl Worker {
         result.unwrap_or_else(ExitReason::Error)
     }
 
-    pub async fn run0(&mut self, inbox: &mut mpsc::Receiver<Message>) -> Result<ExitReason> {
+    pub async fn run0(&mut self, inbox: &mut mpsc::Receiver<WorkerRequest>) -> Result<ExitReason> {
         let phone = &self.config.phone;
 
         let mut state = match self.auth_init().await {
@@ -208,7 +243,7 @@ impl Worker {
         loop {
             if matches!(state, WorkerState::Authorized(_)) && !startup_complete {
                 let context = Arc::new(
-                    WorkerContext::new(self.global_context.clone(), self.client.clone()).await?,
+                    WorkerContext::new(self.global_context.clone(), self.telegram.clone()).await?,
                 );
 
                 let mut sync = Sync::new(context.clone());
@@ -227,7 +262,7 @@ impl Worker {
                     other_uids: vec![],
                 };
 
-                match self.client.invoke(&register).await {
+                match self.telegram.invoke(&register).await {
                     Ok(true) => {
                         debug!(%phone, endpoint=%register.token, "Push endpoint registered");
                     }
@@ -255,43 +290,62 @@ impl Worker {
                 message = inbox.recv() => {
                     if let Some(message) = message {
                         match (&state, message) {
-                            (_, Message::RequestState(sender)) => {
+                            (_, WorkerRequest::RequestState(sender)) => {
                                 trace!(%phone, %state, "Request state");
 
                                 #[allow(unused)]
                                 sender.send(self.state_response(&state).await?);
                             }
 
-                            (WorkerState::Authorized(_user), Message::RequestUser(sender)) => {
+                            (WorkerState::Authorized(_user), WorkerRequest::RequestChannels(requested_workspace_id, sender)) => {
+                                trace!(%phone, workspace_id = %requested_workspace_id, %state, "Request channels");
+
+                                let mut result = Vec::default();
+
+                                for (workspace_id, chat, mode) in self.sync.as_ref().unwrap().chats() {
+                                    if *workspace_id == requested_workspace_id {
+                                        result.push(ChatEntry {
+                                            id: chat.id().to_string(),
+                                            name: chat.card_title(),
+                                            chat_type: chat.chat_type(),
+                                            mode: *mode,
+                                        });
+                                    }
+                                }
+
+                                let _ = sender.send(Ok(result));
+                            }
+
+                            (WorkerState::Authorized(_user), WorkerRequest::RequestUser(sender)) => {
                                 trace!(%phone, %state, "Request user");
 
-                                let user = self.client.get_me().await?;
+                                let user = self.telegram.get_me().await?;
 
                                 #[allow(unused)]
                                 sender.send(user);
                             }
 
-                            (WorkerState::WantCode(token), Message::ProvideCode(code, response)) => {
+                            (WorkerState::WantCode(token), WorkerRequest::ProvideCode(code, response)) => {
                                 state = self.auth_code(token, &code).await?;
 
                                 #[allow(unused)]
                                 response.send(self.state_response(&state).await?);
                             }
 
-                            (WorkerState::WantPassword(_, token), Message::ProvidePassword(password, response)) => {
+                            (WorkerState::WantPassword(_, token), WorkerRequest::ProvidePassword(password, response)) => {
                                 state = self.auth_password(token, &password).await?;
 
                                 #[allow(unused)]
                                 response.send(self.state_response(&state).await?);
                             }
 
-                            (_, Message::Shutdown) => {
+                            (_, WorkerRequest::Shutdown) => {
                                 trace!(%phone, "Shutdown requested");
 
                                 break Ok(ExitReason::Shutdown);
                             }
 
-                            (WorkerState::Authorized(_), Message::Reverse(sync_info, reverse)) => {
+                            (WorkerState::Authorized(_), WorkerRequest::Reverse(sync_info, reverse)) => {
                                 if let Err(error) = self.sync.as_ref().expect("sync is not set").handle_reverse_update(sync_info, reverse).await {
                                     error!(%error, "Error while handling reverse update");
                                 }
@@ -306,7 +360,7 @@ impl Worker {
                     }
                 }
 
-                update = self.client.next_update() => {
+                update = self.telegram.next_update() => {
                     match update {
                         Ok(update) => {
                             self.sync.as_mut().expect("sync is not set").handle_update(update).await?;

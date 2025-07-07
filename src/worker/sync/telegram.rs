@@ -33,7 +33,16 @@ impl MessageExt for Message {
     }
 }
 
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ChatType {
+    User,
+    Group,
+    Channel,
+}
+
 pub trait ChatExt {
+    fn chat_type(&self) -> ChatType;
     fn is_deleted(&self) -> bool;
     fn global_id(&self) -> String;
     fn channel_global_id(channel_id: i64) -> String;
@@ -46,6 +55,14 @@ pub trait EnsurePersonRequestExt {
 }
 
 impl ChatExt for Chat {
+    fn chat_type(&self) -> ChatType {
+        match self {
+            Chat::User(_) => ChatType::User,
+            Chat::Group(_) => ChatType::Group,
+            Chat::Channel(_) => ChatType::Channel,
+        }
+    }
+
     fn is_deleted(&self) -> bool {
         if let Chat::User(user) = self {
             return user.deleted();

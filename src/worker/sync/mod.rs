@@ -7,7 +7,7 @@ mod sync;
 mod tx;
 pub use sync::Sync;
 mod markdown;
-mod telegram;
+pub mod telegram;
 
 pub use context::SyncInfo;
-pub use sync::ReverseUpdate;
+pub use sync::{ReverseUpdate, SyncMode};

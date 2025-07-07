@@ -1,11 +1,13 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, atomic::AtomicU32};
 
 use anyhow::{Result, bail};
 use chrono::TimeDelta;
 use grammers_client::InputMessage;
+use grammers_client::client::chats;
 use grammers_client::types::Chat;
 use grammers_client::types::Message;
+use hulyrs::services::types::WorkspaceUuid;
 use multimap::MultiMap;
 use tokio::{
     self,
@@ -25,7 +27,6 @@ use super::{
 };
 
 use crate::worker::sync::state::HulyMessage;
-use crate::worker::sync::telegram;
 use crate::{config::CONFIG, integration::TelegramIntegration};
 
 struct SyncChat {
@@ -376,8 +377,18 @@ impl SyncChat {
     }
 }
 
+#[derive(Clone, Copy, serde::Serialize, Debug)]
+#[serde(rename_all = "lowercase")]
+pub enum SyncMode {
+    Sync,
+    // NoCard,
+    Disabled,
+    Unknown,
+}
+
 pub struct Sync {
     syncs: MultiMap<String, Arc<SyncChat>>,
+    chats: Vec<(WorkspaceUuid, Arc<Chat>, SyncMode)>,
     cleanup: Arc<Mutex<Vec<JoinHandle<()>>>>,
     context: Arc<WorkerContext>,
     debouncer: Mutex<HashSet<(String, i32)>>,
@@ -388,6 +399,7 @@ impl Sync {
         Self {
             context,
             syncs: MultiMap::new(),
+            chats: Vec::default(),
             cleanup: Arc::default(),
             debouncer: Mutex::default(),
         }
@@ -406,55 +418,48 @@ impl Sync {
 
         let mut chats = Vec::new();
         let mut iter_dialogs = self.context.telegram.iter_dialogs();
+
         while let Some(dialog) = iter_dialogs.next().await? {
-            if dialog
-                .last_message
-                .as_ref()
-                .map(|m| chrono::Utc::now() - m.date() < TimeDelta::days(90))
-                .unwrap_or(false)
-                && !dialog.chat().is_deleted()
-            {
+            if !dialog.chat().is_deleted() {
                 chats.push(Arc::new(dialog.chat().to_owned()));
             }
         }
 
         for chat in chats {
             for integration in &mut integrations {
-                match integration.find_channel_config(chat.id()) {
-                    // channel is enabled
-                    Some(channel) if !channel.enabled => {
-                        continue;
+                let mode = match integration.find_config(chat.id()) {
+                    Some(config) if config.enabled => {
+                        let context = Arc::new(
+                            SyncContext::new(self.context.clone(), chat.clone(), integration)
+                                .await?,
+                        );
+
+                        let (sync, export) = SyncChat::spawn(context).await;
+
+                        self.cleanup.lock().await.push(export);
+                        self.syncs.insert(chat.global_id(), Arc::new(sync));
+
+                        SyncMode::Sync
                     }
 
-                    // channel unknwon and sync all is disabled
-                    None if !integration.data.config.sync_all => {
-                        continue;
+                    Some(_channel) => {
+                        //
+                        SyncMode::Disabled
                     }
 
-                    _ => {}
-                }
+                    None => {
+                        //
+                        SyncMode::Unknown
+                    }
+                };
 
-                let context = Arc::new(
-                    SyncContext::new(self.context.clone(), chat.clone(), integration).await?,
-                );
-
-                let (sync, export) = SyncChat::spawn(context).await;
-
-                self.syncs.insert(chat.global_id(), Arc::new(sync));
-                self.cleanup.lock().await.push(export);
-            }
-        }
-
-        for integration in &integrations {
-            if integration.is_modified {
-                global_services
-                    .account()
-                    .update_workspace_integration(integration)
-                    .await?;
+                self.chats
+                    .push((integration.workspace_id, chat.clone(), mode))
             }
         }
 
         let mut syncs = self.syncs.flat_iter().collect::<Vec<_>>();
+        // ???
         syncs.sort_by_key(|(channel_id, _)| *channel_id);
         syncs.reverse();
 
@@ -470,7 +475,7 @@ impl Sync {
         let task = async move {
             let local_semaphore = Arc::new(Semaphore::new(CONFIG.sync_process_limit_local));
 
-            for sync in syncs {
+            for sync in syncs.into_iter() {
                 match sync.context.state.get_progress().await {
                     Ok(Progress::Complete) => {
                         continue;
@@ -637,6 +642,10 @@ impl Sync {
         // probably post to other workspaces
 
         Ok(())
+    }
+
+    pub fn chats(&self) -> &[(WorkspaceUuid, Arc<Chat>, SyncMode)] {
+        &self.chats
     }
 
     pub async fn abort(self) {

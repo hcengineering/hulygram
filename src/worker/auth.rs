@@ -11,14 +11,14 @@ impl Worker {
     pub(super) async fn auth_init(&self) -> Result<WorkerState> {
         let phone = &self.config.phone;
 
-        let state = if self.client.is_authorized().await? {
+        let state = if self.telegram.is_authorized().await? {
             trace!(%self.id, phase="init", "Authorization successfull");
-            WorkerState::Authorized(self.client.get_me().await?)
+            WorkerState::Authorized(self.telegram.get_me().await?)
         } else {
             trace!(%self.id, phase="init", "Not authorized");
 
             if self.config.hints.support_auth {
-                let token = self.client.request_login_code(&phone.to_string()).await?;
+                let token = self.telegram.request_login_code(&phone.to_string()).await?;
 
                 trace!(%self.id, phase="init", "Login code requested");
 
@@ -36,11 +36,11 @@ impl Worker {
         token: &LoginToken,
         code: &String,
     ) -> Result<WorkerState, SignInError> {
-        match self.client.sign_in(token, code).await {
+        match self.telegram.sign_in(token, code).await {
             Ok(_) => {
                 trace!(%self.id, phase="code", "Authorization successfull");
 
-                let user = self.client.get_me().await.map_err(SignInError::Other)?;
+                let user = self.telegram.get_me().await.map_err(SignInError::Other)?;
 
                 Ok(WorkerState::Authorized(user))
             }
@@ -64,14 +64,14 @@ impl Worker {
         password: &String,
     ) -> Result<WorkerState, SignInError> {
         match self
-            .client
+            .telegram
             .check_password(token.to_owned(), password.as_bytes())
             .await
         {
             Ok(_) => {
                 trace!(%self.id, phase="password", "Authorization successfull");
 
-                let user = self.client.get_me().await.map_err(SignInError::Other)?;
+                let user = self.telegram.get_me().await.map_err(SignInError::Other)?;
 
                 Ok(WorkerState::Authorized(user))
             }

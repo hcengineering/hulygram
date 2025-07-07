@@ -15,7 +15,7 @@ use crate::{
     integration::TelegramIntegration,
     worker::{
         WorkerHintsBuilder,
-        worker::{ExitReason, Message, Worker, WorkerConfig, WorkerHints},
+        worker::{ExitReason, Worker, WorkerConfig, WorkerHints, WorkerRequest},
     },
 };
 
@@ -23,7 +23,7 @@ pub type WorkerId = String;
 
 #[derive(Clone)]
 pub struct SupervisorInner {
-    workers: Arc<Mutex<HashMap<WorkerId, (Sender<Message>, broadcast::Receiver<String>)>>>,
+    workers: Arc<Mutex<HashMap<WorkerId, (Sender<WorkerRequest>, broadcast::Receiver<String>)>>>,
     global: Arc<GlobalContext>,
 }
 
@@ -54,7 +54,7 @@ impl SupervisorInner {
         self: &Arc<Self>,
         phone: &str,
         hints: WorkerHints,
-    ) -> Sender<Message> {
+    ) -> Sender<WorkerRequest> {
         let mut locked = self.workers.lock().await;
 
         let id = phone.to_owned();
@@ -130,7 +130,7 @@ impl SupervisorInner {
                                 }
 
                                 message = receiver.recv() => {
-                                    if matches!(message, Some(Message::Shutdown)) {
+                                    if matches!(message, Some(WorkerRequest::Shutdown)) {
                                         break 'outer;
                                     }
                                 }
@@ -163,7 +163,7 @@ impl SupervisorInner {
                 let receiver = receiver.resubscribe();
 
                 trace!(%id, "Shutting down worker");
-                match sender.send(Message::Shutdown).await {
+                match sender.send(WorkerRequest::Shutdown).await {
                     Ok(()) => {
                         trace!(%id, "Sent shutdown message");
 

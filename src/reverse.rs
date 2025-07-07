@@ -22,7 +22,7 @@ use crate::{
     config::{CONFIG, hulyrs::CONFIG as hconfig},
     context::GlobalContext,
     worker::{
-        Message, SyncContext, WorkerHintsBuilder,
+        WorkerRequest, SyncContext, WorkerHintsBuilder,
         sync::{ReverseUpdate, SyncInfo},
     },
 };
@@ -64,7 +64,7 @@ pub fn start(
         let (workspace, transaction) = parse_message(message)?;
 
         let acquire_worker =
-            async |card_id| -> Result<Option<(tokio::sync::mpsc::Sender<Message>, SyncInfo)>> {
+            async |card_id| -> Result<Option<(tokio::sync::mpsc::Sender<WorkerRequest>, SyncInfo)>> {
                 let sync_info = SyncContext::ref_lookup(&context.kvs(), workspace, card_id).await?;
 
                 let result = if let Some(sync_info) = sync_info {
@@ -93,7 +93,7 @@ pub fn start(
                             acquire_worker(&create_message.card_id).await?
                         {
                             worker
-                                .send(Message::Reverse(
+                                .send(WorkerRequest::Reverse(
                                     sync_info,
                                     ReverseUpdate::MessageCreated {
                                         huly_message_id: create_message.message_id.unwrap(),
@@ -110,7 +110,7 @@ pub fn start(
 
                     if let Some((worker, sync_info)) = acquire_worker(&patch.card_id).await? {
                         worker
-                            .send(Message::Reverse(
+                            .send(WorkerRequest::Reverse(
                                 sync_info,
                                 ReverseUpdate::MessageUpdated {
                                     huly_message_id: patch.message_id,
@@ -128,7 +128,7 @@ pub fn start(
 
                     if let Some((worker, sync_info)) = acquire_worker(&patch.card_id).await? {
                         worker
-                            .send(Message::Reverse(
+                            .send(WorkerRequest::Reverse(
                                 sync_info,
                                 ReverseUpdate::MessageDeleted {
                                     huly_message_id: patch.message_id,
