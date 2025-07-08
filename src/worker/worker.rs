@@ -33,7 +33,7 @@ use crate::worker::sync::{SyncMode, context::SyncInfo};
 pub enum WorkerRequest {
     RequestState(Sender<WorkerStateResponse>),
 
-    RequestChannels(WorkspaceUuid, Sender<Result<Vec<ChatEntry>>>),
+    RequestChannels(WorkspaceUuid, Sender<Vec<ChatEntry>>),
 
     #[allow(dead_code)]
     RequestUser(Sender<User>),
@@ -66,7 +66,7 @@ pub struct ChatEntry {
 
 pub trait WorkerAccess {
     async fn request_state(&self) -> Result<WorkerStateResponse>;
-    async fn request_chats(&self, workspace: WorkspaceUuid) -> Result<Result<Vec<ChatEntry>>>;
+    async fn request_chats(&self, workspace: WorkspaceUuid) -> Result<Vec<ChatEntry>>;
     async fn provide_code(&self, code: String) -> Result<WorkerStateResponse>;
     async fn provide_password(&self, code: String) -> Result<WorkerStateResponse>;
 }
@@ -89,7 +89,7 @@ impl WorkerAccess for mpsc::Sender<WorkerRequest> {
         Ok(receiver.timeout().await??)
     }
 
-    async fn request_chats(&self, workspace: WorkspaceUuid) -> Result<Result<Vec<ChatEntry>>> {
+    async fn request_chats(&self, workspace: WorkspaceUuid) -> Result<Vec<ChatEntry>> {
         let (sender, receiver) = channel();
         self.send(WorkerRequest::RequestChannels(workspace, sender))
             .await?;
@@ -313,7 +313,7 @@ impl Worker {
                                     }
                                 }
 
-                                let _ = sender.send(Ok(result));
+                                let _ = sender.send(result);
                             }
 
                             (WorkerState::Authorized(_user), WorkerRequest::RequestUser(sender)) => {

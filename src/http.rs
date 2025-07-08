@@ -290,7 +290,7 @@ async fn get_chats(
         let worker = supervisor.spawn_worker(&integration.phone, hints).await;
 
         if let Ok(workspace) = claims.workspace() {
-            let chats = worker.request_chats(workspace).await??;
+            let chats = worker.request_chats(workspace).await?;
 
             Ok(HttpResponse::Ok().json(chats))
         } else {
