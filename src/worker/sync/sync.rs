@@ -384,18 +384,21 @@ pub enum SyncMode {
     Unknown,
 }
 
+use crate::context::GlobalContext;
+use grammers_client::Client as TelegramClient;
+
 pub struct Sync {
     syncs: MultiMap<String, Arc<SyncChat>>,
     chats: Vec<(WorkspaceUuid, Arc<Chat>, SyncMode)>,
     cleanup: Arc<Mutex<Vec<JoinHandle<()>>>>,
-    context: Arc<WorkerContext>,
+    context: Arc<GlobalContext>,
     debouncer: Mutex<HashSet<(String, i32)>>,
 }
 
 impl Sync {
-    pub fn new(context: Arc<WorkerContext>) -> Self {
+    pub fn new(global: Arc<GlobalContext>) -> Self {
         Self {
-            context,
+            context: global,
             syncs: MultiMap::new(),
             chats: Vec::default(),
             cleanup: Arc::default(),
@@ -403,19 +406,22 @@ impl Sync {
         }
     }
 
-    pub async fn spawn(&mut self) -> Result<()> {
+    pub async fn spawn(&mut self, telegram: TelegramClient) -> Result<()> {
         self.syncs.clear();
 
-        let global_services = &self.context.global;
+        let context = Arc::new(WorkerContext::new(self.context.clone(), telegram).await?);
 
-        let me = Arc::new(self.context.telegram.get_me().await?);
+        let global_services = &context.global;
+
+        let me = Arc::new(context.telegram.get_me().await?);
+
         let mut integrations = global_services
             .account()
             .find_workspace_integrations(me.id())
             .await?;
 
         let mut chats = Vec::new();
-        let mut iter_dialogs = self.context.telegram.iter_dialogs();
+        let mut iter_dialogs = context.telegram.iter_dialogs();
 
         while let Some(dialog) = iter_dialogs.next().await? {
             if !dialog.chat().is_deleted() {
@@ -428,8 +434,7 @@ impl Sync {
                 let mode = match integration.find_config(chat.id()) {
                     Some(config) if config.enabled => {
                         let context = Arc::new(
-                            SyncContext::new(self.context.clone(), chat.clone(), integration)
-                                .await?,
+                            SyncContext::new(context.clone(), chat.clone(), integration).await?,
                         );
 
                         let (sync, export) = SyncChat::spawn(context).await;
@@ -466,7 +471,7 @@ impl Sync {
             .map(|(_, sync)| sync.clone())
             .collect::<Vec<_>>();
 
-        let global_semaphore = self.context.global.limiters().sync_semaphore.clone();
+        let global_semaphore = context.global.limiters().sync_semaphore.clone();
 
         let cleanup = self.cleanup.clone();
 
@@ -519,7 +524,7 @@ impl Sync {
         };
 
         let handle = TaskBuilder::new()
-            .name(&format!("scheduler-{}", self.context.me.id()))
+            .name(&format!("scheduler-{}", context.me.id()))
             .spawn(task)?;
 
         self.cleanup.lock().await.push(handle);

@@ -19,7 +19,6 @@ use tokio::{
 };
 use tracing::*;
 
-use super::context::WorkerContext;
 use super::supervisor::WorkerId;
 use super::sync::{
     ReverseUpdate, Sync,
@@ -140,7 +139,7 @@ pub struct Worker {
     pub config: Arc<WorkerConfig>,
     pub telegram: TelegramClient,
     session_key: String,
-    sync: Option<Sync>,
+    sync: Sync,
     global_context: Arc<GlobalContext>,
 }
 
@@ -172,6 +171,8 @@ impl Worker {
             Session::new()
         };
 
+        let sync = Sync::new(global_context.clone());
+
         let telegram = TelegramClient::connect(Config {
             session,
             api_id: CONFIG.telegram_api_id,
@@ -187,7 +188,7 @@ impl Worker {
             config,
             telegram,
             session_key,
-            sync: None,
+            sync,
             global_context,
         })
     }
@@ -217,9 +218,8 @@ impl Worker {
             let _ = self.persist_session().await;
         }
 
-        if let Some(sync) = self.sync.take() {
-            sync.abort().await;
-        }
+        //if let Some(sync) = self.sync.take() {
+        self.sync.abort().await;
 
         result.unwrap_or_else(ExitReason::Error)
     }
@@ -242,14 +242,7 @@ impl Worker {
 
         loop {
             if matches!(state, WorkerState::Authorized(_)) && !startup_complete {
-                let context = Arc::new(
-                    WorkerContext::new(self.global_context.clone(), self.telegram.clone()).await?,
-                );
-
-                let mut sync = Sync::new(context.clone());
-                sync.spawn().await?;
-
-                self.sync = Some(sync);
+                self.sync.spawn(self.telegram.clone()).await?;
 
                 let token = CONFIG.base_url.join("/push/")?.join(phone)?.to_string();
 
@@ -302,7 +295,7 @@ impl Worker {
 
                                 let mut result = Vec::default();
 
-                                for (workspace_id, chat, mode) in self.sync.as_ref().unwrap().chats() {
+                                for (workspace_id, chat, mode) in self.sync.chats() {
                                     if *workspace_id == requested_workspace_id {
                                         result.push(ChatEntry {
                                             id: chat.id().to_string(),
@@ -346,7 +339,7 @@ impl Worker {
                             }
 
                             (WorkerState::Authorized(_), WorkerRequest::Reverse(sync_info, reverse)) => {
-                                if let Err(error) = self.sync.as_ref().expect("sync is not set").handle_reverse_update(sync_info, reverse).await {
+                                if let Err(error) = self.sync.handle_reverse_update(sync_info, reverse).await {
                                     error!(%error, "Error while handling reverse update");
                                 }
                             }
@@ -363,7 +356,7 @@ impl Worker {
                 update = self.telegram.next_update() => {
                     match update {
                         Ok(update) => {
-                            self.sync.as_mut().expect("sync is not set").handle_update(update).await?;
+                            self.sync.handle_update(update).await?;
                         }
 
                         Err(error) => {

@@ -29,6 +29,8 @@ pub struct AccountIntegrationData {
 pub struct WorkspaceIntegration {
     pub data: IntegrationData,
     pub workspace_id: WorkspaceUuid,
+
+    #[allow(dead_code)]
     pub social_id: SocialIdId,
     pub endpoint: Url,
 }
