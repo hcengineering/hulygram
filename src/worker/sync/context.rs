@@ -8,10 +8,10 @@ use serde::{Deserialize, Serialize};
 use serde_json as json;
 
 use super::state::SyncState;
-use super::telegram::ChatExt;
 use crate::config::CONFIG;
 use crate::config::hulyrs::SERVICES;
 use crate::integration::WorkspaceIntegration;
+use crate::telegram::ChatExt;
 use crate::worker::context::WorkerContext;
 use crate::worker::sync::blob::BlobClient;
 

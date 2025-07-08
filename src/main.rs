@@ -15,7 +15,9 @@ mod etc;
 mod http;
 mod integration;
 mod reverse;
+mod telegram;
 mod worker;
+
 use tikv_jemallocator::Jemalloc;
 
 use config::CONFIG;

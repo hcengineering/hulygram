@@ -6,6 +6,8 @@ use hulyrs::services::{
     types::SocialIdType,
 };
 
+use crate::worker::sync::generate_markdown_message;
+
 pub trait MessageExt {
     fn last_date(&self) -> DateTime<Utc>;
     fn huly_markdown_text(&self) -> String;
@@ -26,7 +28,7 @@ impl MessageExt for Message {
         }
 
         if let Some(entities) = entities(self) {
-            super::markdown::generate_markdown_message(self.text(), entities)
+            generate_markdown_message(self.text(), entities)
         } else {
             self.text().to_owned()
         }

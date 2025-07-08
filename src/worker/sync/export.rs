@@ -18,12 +18,8 @@ use hulyrs::services::{
 use redis::AsyncCommands;
 use tracing::*;
 
-use super::{
-    context::SyncContext,
-    media::MediaTransfer,
-    telegram::{EnsurePersonRequestExt, MessageExt},
-    tx::TransactorExt,
-};
+use super::{context::SyncContext, media::MediaTransfer, tx::TransactorExt};
+use crate::telegram::{EnsurePersonRequestExt, MessageExt};
 use crate::{
     CONFIG,
     context::GlobalContext,

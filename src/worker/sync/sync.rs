@@ -21,9 +21,8 @@ use super::{
     context::SyncInfo,
     export::Exporter,
     state::{Progress, SyncState},
-    telegram::{ChatExt, MessageExt},
 };
-
+use crate::telegram::{ChatExt, MessageExt};
 use crate::worker::sync::state::HulyMessage;
 use crate::{config::CONFIG, integration::TelegramIntegration};
 

@@ -20,12 +20,10 @@ use tokio::{
 use tracing::*;
 
 use super::supervisor::WorkerId;
-use super::sync::{
-    ReverseUpdate, Sync,
-    telegram::{ChatExt, ChatType},
-};
+use super::sync::{ReverseUpdate, Sync};
 use crate::config::CONFIG;
 use crate::context::GlobalContext;
+use crate::telegram::{ChatExt, ChatType};
 use crate::worker::sync::{SyncMode, context::SyncInfo};
 
 #[derive(Debug)]
