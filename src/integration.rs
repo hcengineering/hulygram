@@ -9,7 +9,7 @@ use url::Url;
 use hulyrs::services::{
     account::{
         AccountClient, AddSocialIdToPersonParams, Integration, IntegrationKey,
-        PartialIntegrationKey, SelectWorkspaceParams, WorkspaceKind,
+        PartialIntegrationKey, SelectWorkspaceParams, WorkspaceKind, WorkspaceMode,
     },
     jwt::{Claims, ClaimsBuilder},
     types::{AccountUuid, PersonId, SocialIdId, SocialIdType, WorkspaceUuid},
@@ -227,15 +227,38 @@ impl TelegramIntegration for AccountClient {
 
         let mut ws_indexed = HashMap::new();
         for ws in accountc.get_user_workspaces().await?.into_iter() {
-            let ws_login_info = accountc
+            // Check if workspace is active before processing
+            if ws.status.mode != Some(WorkspaceMode::Active) {
+                trace!(
+                    workspace_id = %ws.workspace.uuid,
+                    workspace_url = %ws.workspace.url,
+                    workspace_status = ?ws.status.mode,
+                    "Skipping inactive workspace"
+                );
+                continue;
+            }
+
+            match accountc
                 .select_workspace(&SelectWorkspaceParams {
-                    workspace_url: ws.workspace.url,
+                    workspace_url: ws.workspace.url.clone(),
                     kind: WorkspaceKind::Internal,
                     external_regions: Vec::default(),
                 })
-                .await?;
-
-            ws_indexed.insert(ws.workspace.uuid, ws_login_info.endpoint);
+                .await
+            {
+                Ok(ws_login_info) => {
+                    ws_indexed.insert(ws.workspace.uuid, ws_login_info.endpoint);
+                }
+                Err(error) => {
+                    warn!(
+                        workspace_id = %ws.workspace.uuid,
+                        workspace_url = %ws.workspace.url,
+                        %error,
+                        "Failed to select workspace, skipping"
+                    );
+                    continue;
+                }
+            }
         }
 
         let integrations = self
