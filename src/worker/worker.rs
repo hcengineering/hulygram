@@ -69,11 +69,15 @@ pub trait WorkerAccess {
 }
 
 trait RequestTimeout: Future {
-    async fn timeout(self) -> Result<Self::Output>
+    async fn timeout(self, op: &str) -> Result<Self::Output>
     where
         Self: Sized,
     {
-        Ok(time::timeout(Duration::from_secs(2), self).await?)
+        const DURATION: Duration = Duration::from_secs(5);
+
+        Ok(time::timeout(DURATION, self)
+            .await
+            .map_err(|_| anyhow::anyhow!("Timeout while {} ({}ms)", op, DURATION.as_millis()))?)
     }
 }
 
@@ -83,27 +87,27 @@ impl WorkerAccess for mpsc::Sender<WorkerRequest> {
     async fn request_state(&self) -> Result<WorkerStateResponse> {
         let (sender, receiver) = channel();
         self.send(WorkerRequest::RequestState(sender)).await?;
-        Ok(receiver.timeout().await??)
+        Ok(receiver.timeout("request_state").await??)
     }
 
     async fn request_chats(&self, workspace: WorkspaceUuid) -> Result<Vec<ChatEntry>> {
         let (sender, receiver) = channel();
         self.send(WorkerRequest::RequestChannels(workspace, sender))
             .await?;
-        Ok(receiver.timeout().await??)
+        Ok(receiver.timeout("request_chats").await??)
     }
 
     async fn provide_code(&self, code: String) -> Result<WorkerStateResponse> {
         let (sender, receiver) = channel();
         self.send(WorkerRequest::ProvideCode(code, sender)).await?;
-        Ok(receiver.timeout().await??)
+        Ok(receiver.timeout("provide_code").await??)
     }
 
     async fn provide_password(&self, password: String) -> Result<WorkerStateResponse> {
         let (sender, receiver) = channel();
         self.send(WorkerRequest::ProvidePassword(password, sender))
             .await?;
-        Ok(receiver.timeout().await??)
+        Ok(receiver.timeout("provide_password").await??)
     }
 }
 
