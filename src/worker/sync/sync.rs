@@ -405,6 +405,7 @@ impl Sync {
         }
     }
 
+    #[instrument(level = "trace", skip_all)]
     pub async fn spawn(&mut self, telegram: TelegramClient) -> Result<()> {
         self.syncs.clear();
 
@@ -428,6 +429,11 @@ impl Sync {
             }
         }
 
+        let all_chats = chats.len();
+        let mut sync_active = 0;
+        let mut sync_disabled = 0;
+        let mut sync_unknown = 0;
+
         for chat in chats {
             for integration in &mut integrations {
                 let mode = match integration.find_config(chat.id()) {
@@ -441,16 +447,18 @@ impl Sync {
                         self.cleanup.lock().await.push(export);
                         self.syncs.insert(chat.global_id(), Arc::new(sync));
 
+                        sync_active += 1;
+
                         SyncMode::Sync
                     }
 
                     Some(_channel) => {
-                        //
+                        sync_disabled += 1;
                         SyncMode::Disabled
                     }
 
                     None => {
-                        //
+                        sync_unknown += 1;
                         SyncMode::Unknown
                     }
                 };
@@ -459,6 +467,11 @@ impl Sync {
                     .push((integration.workspace_id, chat.clone(), mode))
             }
         }
+
+        trace!(
+            all_chats,
+            sync_active, sync_disabled, sync_unknown, "Sync stats"
+        );
 
         let mut syncs = self.syncs.flat_iter().collect::<Vec<_>>();
         // ???

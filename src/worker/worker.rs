@@ -26,7 +26,7 @@ use crate::context::GlobalContext;
 use crate::telegram::{ChatExt, ChatType};
 use crate::worker::sync::{SyncMode, context::SyncInfo};
 
-#[derive(Debug)]
+#[derive(Debug, strum::Display)]
 pub enum WorkerRequest {
     RequestState(Sender<WorkerStateResponse>),
 
@@ -222,6 +222,7 @@ impl Worker {
         result.unwrap_or_else(ExitReason::Error)
     }
 
+    #[instrument(name = "run", level = "trace", skip_all)]
     pub async fn run0(&mut self, inbox: &mut mpsc::Receiver<WorkerRequest>) -> Result<ExitReason> {
         let phone = &self.config.phone;
 
@@ -240,6 +241,8 @@ impl Worker {
 
         loop {
             if matches!(state, WorkerState::Authorized(_)) && !startup_complete {
+                trace!("Startup Begin");
+
                 self.sync.spawn(self.telegram.clone()).await?;
 
                 let token = CONFIG.base_url.join("/push/")?.join(phone)?.to_string();
@@ -269,6 +272,8 @@ impl Worker {
                 self.persist_session().await?;
 
                 startup_complete = true;
+
+                trace!("Startup Complete");
             }
 
             select! {
@@ -279,8 +284,12 @@ impl Worker {
                 }
 
                 message = inbox.recv() => {
-                    if let Some(message) = message {
-                        match (&state, message) {
+                    if let Some(request) = message {
+                        let span = span!(Level::TRACE, "Worker request", %phone, %state, %request);
+                        let _enter = span.enter();
+
+
+                        match (&state, request) {
                             (_, WorkerRequest::RequestState(sender)) => {
                                 trace!(%phone, %state, "Request state");
 
@@ -289,7 +298,7 @@ impl Worker {
                             }
 
                             (WorkerState::Authorized(_user), WorkerRequest::RequestChannels(requested_workspace_id, sender)) => {
-                                trace!(%phone, workspace_id = %requested_workspace_id, %state, "Request channels");
+                                trace!(workspace_id = %requested_workspace_id,"Request channels");
 
                                 let mut result = Vec::default();
 
