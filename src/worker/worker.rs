@@ -40,6 +40,7 @@ pub enum WorkerRequest {
     ProvideCode(String, Sender<WorkerStateResponse>),
     ProvidePassword(String, Sender<WorkerStateResponse>),
     Shutdown,
+    Restart,
 }
 
 #[derive(Debug, strum::Display)]
@@ -148,6 +149,7 @@ pub struct Worker {
 pub enum ExitReason {
     Shutdown,
     Hibenate,
+    Restart,
     NotAuthorized,
     Error(anyhow::Error),
 }
@@ -345,8 +347,12 @@ impl Worker {
 
                             (_, WorkerRequest::Shutdown) => {
                                 trace!(%phone, "Shutdown requested");
-
                                 break Ok(ExitReason::Shutdown);
+                            }
+
+                            (_, WorkerRequest::Restart) => {
+                                trace!(%phone, "Restart requested");
+                                break Ok(ExitReason::Restart);
                             }
 
                             (WorkerState::Authorized(_), WorkerRequest::Reverse(sync_info, reverse)) => {

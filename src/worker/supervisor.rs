@@ -50,6 +50,19 @@ impl SupervisorInner {
         Ok(())
     }
 
+    pub async fn restart_worker(&self, phone: &str) -> anyhow::Result<bool> {
+        let locked = self.workers.lock().await;
+
+        let id = phone.to_owned();
+
+        if let Some((sender, _)) = locked.get(&id) {
+            sender.send(WorkerRequest::Restart).await?;
+            Ok(true)
+        } else {
+            Ok(false)
+        }
+    }
+
     pub async fn spawn_worker(
         self: &Arc<Self>,
         phone: &str,
@@ -100,6 +113,10 @@ impl SupervisorInner {
                                 ExitReason::Hibenate => {
                                     debug!(%id, "Worker hibernated");
                                     Some(Duration::from_secs(5))
+                                }
+                                ExitReason::Restart => {
+                                    debug!(%id, "Worker restart");
+                                    Some(Duration::ZERO)
                                 }
                                 ExitReason::NotAuthorized => {
                                     debug!(%id, "Worker not authorized");

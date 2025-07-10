@@ -86,7 +86,8 @@ pub fn spawn(
                     .route("/integrations/", web::get().to(enumerate))
                     .route("/integrations/{number}", web::get().to(get_state))
                     .route("/integrations/{number}", web::post().to(command))
-                    .route("/integrations/{number}/chats", web::get().to(get_chats)),
+                    .route("/integrations/{number}/chats", web::get().to(get_chats))
+                    .route("/integrations/{number}/restart", web::post().to(restart)),
             )
             .route("/push/{number}", web::put().to(push))
             .route("/push/{number}", web::post().to(push))
@@ -301,6 +302,20 @@ async fn get_chats(
 
         Ok(HttpResponse::NotFound().finish())
     }
+}
+
+async fn restart(
+    phone: Path<String>,
+    supervisor: Data<Arc<Supervisor>>,
+) -> HandlerResult<HttpResponse> {
+    let phone = normalize_phone_number(&phone)?;
+
+    Ok(if supervisor.get_ref().restart_worker(&phone).await? {
+        HttpResponse::Accepted()
+    } else {
+        HttpResponse::NotFound()
+    }
+    .finish())
 }
 
 async fn command(
