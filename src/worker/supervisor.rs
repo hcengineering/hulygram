@@ -147,7 +147,7 @@ impl SupervisorInner {
                                 }
 
                                 message = receiver.recv() => {
-                                    if matches!(message, Some(WorkerRequest::Shutdown)) {
+                                    if matches!(message, Some(WorkerRequest::Shutdown(_))) {
                                         break 'outer;
                                     }
                                 }
@@ -180,7 +180,7 @@ impl SupervisorInner {
                 let receiver = receiver.resubscribe();
 
                 trace!(%id, "Shutting down worker");
-                match sender.send(WorkerRequest::Shutdown).await {
+                match sender.send(WorkerRequest::Shutdown(false)).await {
                     Ok(()) => {
                         trace!(%id, "Sent shutdown message");
 
@@ -195,6 +195,17 @@ impl SupervisorInner {
 
         for mut receiver in receivers {
             _ = receiver.recv().await;
+        }
+    }
+
+    pub async fn shutdown(&self, phone: &str, sign_out: bool) -> anyhow::Result<bool> {
+        let locked = self.workers.lock().await;
+
+        if let Some((sender, _)) = locked.get(phone) {
+            sender.send(WorkerRequest::Shutdown(sign_out)).await?;
+            Ok(true)
+        } else {
+            Ok(false)
         }
     }
 }

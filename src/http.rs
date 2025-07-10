@@ -86,6 +86,7 @@ pub fn spawn(
                     .route("/integrations/", web::get().to(enumerate))
                     .route("/integrations/{number}", web::get().to(get_state))
                     .route("/integrations/{number}", web::post().to(command))
+                    .route("/integrations/{number}", web::delete().to(signout))
                     .route("/integrations/{number}/chats", web::get().to(get_chats))
                     .route("/integrations/{number}/restart", web::post().to(restart)),
             )
@@ -316,6 +317,17 @@ async fn restart(
         HttpResponse::NotFound()
     }
     .finish())
+}
+
+async fn signout(
+    phone: Path<String>,
+    supervisor: Data<Arc<Supervisor>>,
+) -> HandlerResult<HttpResponse> {
+    let phone = normalize_phone_number(&phone)?;
+
+    supervisor.get_ref().shutdown(&phone, true).await?;
+
+    Ok(HttpResponse::Accepted().finish())
 }
 
 async fn command(

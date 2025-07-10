@@ -39,7 +39,7 @@ pub enum WorkerRequest {
 
     ProvideCode(String, Sender<WorkerStateResponse>),
     ProvidePassword(String, Sender<WorkerStateResponse>),
-    Shutdown,
+    Shutdown(bool),
     Restart,
 }
 
@@ -205,6 +205,10 @@ impl Worker {
             .await?)
     }
 
+    async fn delete_session(&self) -> Result<()> {
+        Ok(self.global_context.kvs().delete(&self.session_key).await?)
+    }
+
     async fn state_response(&self, state: &WorkerState) -> Result<WorkerStateResponse> {
         match state {
             WorkerState::Authorized(user) => Ok(WorkerStateResponse::Authorized(user.clone())),
@@ -345,8 +349,18 @@ impl Worker {
                                 response.send(self.state_response(&state).await?);
                             }
 
-                            (_, WorkerRequest::Shutdown) => {
+                            (_, WorkerRequest::Shutdown(false)) => {
                                 trace!(%phone, "Shutdown requested");
+
+                                break Ok(ExitReason::Shutdown);
+                            }
+
+                            (_, WorkerRequest::Shutdown(true)) => {
+                                debug!(%phone, "Sign out requested");
+
+                                self.telegram.sign_out().await?;
+                                self.delete_session().await?;
+
                                 break Ok(ExitReason::Shutdown);
                             }
 
