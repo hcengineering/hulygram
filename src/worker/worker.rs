@@ -13,7 +13,7 @@ use tokio::{
     select,
     sync::{
         mpsc,
-        oneshot::{Sender, channel},
+        oneshot::{Sender, channel, error::RecvError},
     },
     time,
 };
@@ -26,19 +26,50 @@ use crate::context::GlobalContext;
 use crate::telegram::{ChatExt, ChatType};
 use crate::worker::sync::{SyncMode, context::SyncInfo};
 
+#[derive(Debug, thiserror::Error)]
+pub enum WorkerRequestError {
+    #[error("Unauthorized")]
+    Unauthorized,
+
+    #[error("Timeout: {0}")]
+    Timeout(&'static str),
+
+    #[error("No worker")]
+    NoWorker,
+}
+
+impl From<mpsc::error::SendError<WorkerRequest>> for WorkerRequestError {
+    fn from(_: mpsc::error::SendError<WorkerRequest>) -> Self {
+        WorkerRequestError::NoWorker
+    }
+}
+
+impl From<RecvError> for WorkerRequestError {
+    fn from(_: RecvError) -> Self {
+        WorkerRequestError::NoWorker
+    }
+}
+
 #[derive(Debug, strum::Display)]
 pub enum WorkerRequest {
-    RequestState(Sender<WorkerStateResponse>),
+    RequestState(Sender<Result<WorkerStateResponse, WorkerRequestError>>),
 
-    RequestChannels(WorkspaceUuid, Sender<Vec<ChatEntry>>),
+    RequestChannels(
+        WorkspaceUuid,
+        Sender<Result<Vec<ChatEntry>, WorkerRequestError>>,
+    ),
 
-    #[allow(dead_code)]
-    RequestUser(Sender<User>),
-
+    //#[allow(dead_code)]
+    //RequestUser(Sender<User>),
     Reverse(SyncInfo, ReverseUpdate),
-
-    ProvideCode(String, Sender<WorkerStateResponse>),
-    ProvidePassword(String, Sender<WorkerStateResponse>),
+    ProvideCode(
+        String,
+        Sender<Result<WorkerStateResponse, WorkerRequestError>>,
+    ),
+    ProvidePassword(
+        String,
+        Sender<Result<WorkerStateResponse, WorkerRequestError>>,
+    ),
     Shutdown(bool),
     Restart,
 }
@@ -62,53 +93,67 @@ pub struct ChatEntry {
     mode: SyncMode,
 }
 
+pub type WorkerResponse<T> = Result<T, WorkerRequestError>;
+
 pub trait WorkerAccess {
-    async fn request_state(&self) -> Result<WorkerStateResponse>;
-    async fn request_chats(&self, workspace: WorkspaceUuid) -> Result<Vec<ChatEntry>>;
-    async fn provide_code(&self, code: String) -> Result<WorkerStateResponse>;
-    async fn provide_password(&self, code: String) -> Result<WorkerStateResponse>;
+    async fn request_state(&self) -> WorkerResponse<WorkerStateResponse>;
+    async fn request_chats(&self, workspace: WorkspaceUuid) -> WorkerResponse<Vec<ChatEntry>>;
+    async fn provide_code(&self, code: String) -> WorkerResponse<WorkerStateResponse>;
+    async fn provide_password(&self, code: String) -> WorkerResponse<WorkerStateResponse>;
 }
 
-trait RequestTimeout: Future {
-    async fn timeout(self, op: &str) -> Result<Self::Output>
+trait WorkerReceiver<T>: Future<Output = Result<WorkerResponse<T>, RecvError>> {
+    async fn response(self, op: &'static str) -> Result<T, WorkerRequestError>
     where
         Self: Sized,
     {
         const DURATION: Duration = Duration::from_secs(5);
 
-        Ok(time::timeout(DURATION, self)
-            .await
-            .map_err(|_| anyhow::anyhow!("Timeout while {} ({}ms)", op, DURATION.as_millis()))?)
+        time::timeout(DURATION, self).await.map_err(|_| {
+            error!(%op, "Worker request timed out");
+            WorkerRequestError::Timeout(op)
+        })??
     }
 }
 
-impl<T: Future> RequestTimeout for T {}
+impl<T, F: Future<Output = Result<WorkerResponse<T>, RecvError>>> WorkerReceiver<T> for F {
+    //
+}
 
 impl WorkerAccess for mpsc::Sender<WorkerRequest> {
-    async fn request_state(&self) -> Result<WorkerStateResponse> {
+    async fn request_state(&self) -> Result<WorkerStateResponse, WorkerRequestError> {
         let (sender, receiver) = channel();
         self.send(WorkerRequest::RequestState(sender)).await?;
-        Ok(receiver.timeout("request_state").await??)
+
+        receiver.response("request_state").await
     }
 
-    async fn request_chats(&self, workspace: WorkspaceUuid) -> Result<Vec<ChatEntry>> {
+    async fn request_chats(
+        &self,
+        workspace: WorkspaceUuid,
+    ) -> Result<Vec<ChatEntry>, WorkerRequestError> {
         let (sender, receiver) = channel();
         self.send(WorkerRequest::RequestChannels(workspace, sender))
             .await?;
-        Ok(receiver.timeout("request_chats").await??)
+
+        receiver.response("request_chats").await
     }
 
-    async fn provide_code(&self, code: String) -> Result<WorkerStateResponse> {
+    async fn provide_code(&self, code: String) -> Result<WorkerStateResponse, WorkerRequestError> {
         let (sender, receiver) = channel();
         self.send(WorkerRequest::ProvideCode(code, sender)).await?;
-        Ok(receiver.timeout("provide_code").await??)
+
+        receiver.response("provide_code").await
     }
 
-    async fn provide_password(&self, password: String) -> Result<WorkerStateResponse> {
+    async fn provide_password(
+        &self,
+        password: String,
+    ) -> Result<WorkerStateResponse, WorkerRequestError> {
         let (sender, receiver) = channel();
         self.send(WorkerRequest::ProvidePassword(password, sender))
             .await?;
-        Ok(receiver.timeout("provide_password").await??)
+        receiver.response("provide_password").await
     }
 }
 
@@ -209,13 +254,11 @@ impl Worker {
         Ok(self.global_context.kvs().delete(&self.session_key).await?)
     }
 
-    async fn state_response(&self, state: &WorkerState) -> Result<WorkerStateResponse> {
+    fn state_response(&self, state: &WorkerState) -> WorkerStateResponse {
         match state {
-            WorkerState::Authorized(user) => Ok(WorkerStateResponse::Authorized(user.clone())),
-            WorkerState::WantCode(_) => Ok(WorkerStateResponse::WantCode),
-            WorkerState::WantPassword(hint, _) => {
-                Ok(WorkerStateResponse::WantPassword(hint.clone()))
-            }
+            WorkerState::Authorized(user) => WorkerStateResponse::Authorized(user.clone()),
+            WorkerState::WantCode(_) => WorkerStateResponse::WantCode,
+            WorkerState::WantPassword(hint, _) => WorkerStateResponse::WantPassword(hint.clone()),
         }
     }
 
@@ -304,7 +347,7 @@ impl Worker {
                                 trace!(%phone, %state, "Request state");
 
                                 #[allow(unused)]
-                                sender.send(self.state_response(&state).await?);
+                                sender.send(Ok(self.state_response(&state)));
                             }
 
                             (WorkerState::Authorized(_user), WorkerRequest::RequestChannels(requested_workspace_id, sender)) => {
@@ -323,30 +366,30 @@ impl Worker {
                                     }
                                 }
 
-                                let _ = sender.send(result);
+                                let _ = sender.send(Ok(result));
                             }
 
-                            (WorkerState::Authorized(_user), WorkerRequest::RequestUser(sender)) => {
-                                trace!(%phone, %state, "Request user");
+                           // (WorkerState::Authorized(_user), WorkerRequest::RequestUser(sender)) => {
+                             //   trace!(%phone, %state, "Request user");
 
-                                let user = self.telegram.get_me().await?;
+                           //     let user = self.telegram.get_me().await?;
 
-                                #[allow(unused)]
-                                sender.send(user);
-                            }
+                            //    #[allow(unused)]
+                           //     sender.send(user);
+                          //  }
 
                             (WorkerState::WantCode(token), WorkerRequest::ProvideCode(code, response)) => {
                                 state = self.auth_code(token, &code).await?;
 
                                 #[allow(unused)]
-                                response.send(self.state_response(&state).await?);
+                                response.send(Ok(self.state_response(&state)));
                             }
 
                             (WorkerState::WantPassword(_, token), WorkerRequest::ProvidePassword(password, response)) => {
                                 state = self.auth_password(token, &password).await?;
 
                                 #[allow(unused)]
-                                response.send(self.state_response(&state).await?);
+                                response.send(Ok(self.state_response(&state)));
                             }
 
                             (_, WorkerRequest::Shutdown(false)) => {

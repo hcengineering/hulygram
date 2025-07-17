@@ -17,26 +17,39 @@ use crate::{
     config::CONFIG,
     context::GlobalContext,
     integration::{AccountIntegrationData, TelegramIntegration},
-    worker::{Supervisor, WorkerAccess, WorkerHintsBuilder, WorkerStateResponse},
+    worker::{
+        Supervisor, WorkerAccess, WorkerHintsBuilder, WorkerRequestError, WorkerStateResponse,
+    },
 };
 
 #[derive(thiserror::Error, Debug)]
 enum ApiError {
     #[error(transparent)]
     Anyhow(#[from] anyhow::Error),
+
     #[error(transparent)]
     Huly(#[from] hulyrs::Error),
+
     #[error(transparent)]
     Http(#[from] actix_web::error::Error),
+
+    #[error(transparent)]
+    Worker(#[from] WorkerRequestError),
 }
 
 impl actix_web::ResponseError for ApiError {
     fn error_response(&self) -> HttpResponse {
-        if let ApiError::Http(error) = self {
-            error.error_response()
-        } else {
-            tracing::error!(error=%self, "Internal error in http handler");
-            HttpResponse::InternalServerError().body("Internal Server Error")
+        match self {
+            ApiError::Http(error) => error.error_response(),
+
+            ApiError::Worker(WorkerRequestError::Unauthorized) => {
+                HttpResponse::Unauthorized().body("Unauthorized")
+            }
+
+            _ => {
+                tracing::error!(error=%self, "Internal error in http handler");
+                HttpResponse::InternalServerError().body("Internal Server Error")
+            }
         }
     }
 }
