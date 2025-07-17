@@ -1542,7 +1542,7 @@ dependencies = [
 [[package]]
 name = "hulyrs"
 version = "0.1.0"
-source = "git+https://github.com/hcengineering/hulyrs.git#7198c9b5888f906b602e21e2a8c67d7b2d9cd9db"
+source = "git+https://github.com/hcengineering/hulyrs.git#6f90bc9f608bcb2309a68bcfd45e414a03302a56"
 dependencies = [
  "actix-web",
  "bytes",
@@ -1550,6 +1550,7 @@ dependencies = [
  "config",
  "derive_builder",
  "governor",
+ "itoa",
  "jsonwebtoken",
  "ksuid",
  "num-traits",
@@ -1558,6 +1559,7 @@ dependencies = [
  "reqwest-middleware",
  "reqwest-ratelimit",
  "reqwest-retry",
+ "ryu",
  "secrecy",
  "serde",
  "serde_json",

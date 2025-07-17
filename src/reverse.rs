@@ -22,7 +22,7 @@ use crate::{
     config::{CONFIG, hulyrs::CONFIG as hconfig},
     context::GlobalContext,
     worker::{
-        WorkerRequest, SyncContext, WorkerHintsBuilder,
+        SyncContext, WorkerHintsBuilder, WorkerRequest,
         sync::{ReverseUpdate, SyncInfo},
     },
 };
@@ -53,7 +53,7 @@ pub fn start(
 
     let consumer = create_consumer(topic)?;
 
-    info!(topic, "inbound transactions consumer started");
+    info!(topic, "Inbound transactions consumer started");
 
     #[instrument(level = "trace", skip_all)]
     async fn process_message(
@@ -63,30 +63,39 @@ pub fn start(
     ) -> Result<()> {
         let (workspace, transaction) = parse_message(message)?;
 
-        let acquire_worker =
-            async |card_id| -> Result<Option<(tokio::sync::mpsc::Sender<WorkerRequest>, SyncInfo)>> {
-                let sync_info = SyncContext::ref_lookup(&context.kvs(), workspace, card_id).await?;
+        let acquire_worker = async |card_id| -> Result<
+            Option<(tokio::sync::mpsc::Sender<WorkerRequest>, SyncInfo)>,
+        > {
+            let sync_info = SyncContext::ref_lookup(&context.kvs(), workspace, card_id).await?;
 
-                let result = if let Some(sync_info) = sync_info {
-                    let hints = WorkerHintsBuilder::default().support_auth(false).build()?;
+            let result = if let Some(sync_info) = sync_info {
+                let hints = WorkerHintsBuilder::default().support_auth(false).build()?;
 
-                    let phone = &sync_info.telegram_phone_number;
-                    Some((supervisor.spawn_worker(phone, hints).await, sync_info))
-                } else {
-                    None
-                };
-
-                Ok(result)
+                let phone = &sync_info.telegram_phone_number;
+                Some((supervisor.spawn_worker(phone, hints).await, sync_info))
+            } else {
+                None
             };
 
-        if transaction.matches(Some("core:class:TxDomainEvent"), Some("communication")) {
-            let domain_event =
-                json::from_value::<TxDomainEvent<Envelope<Value>>>(transaction).unwrap();
+            Ok(result)
+        };
 
-            match domain_event.event.r#type {
+        if transaction.matches(Some("core:class:TxDomainEvent"), Some("communication")) {
+            let event = json::from_value::<TxDomainEvent<Envelope<Value>>>(transaction.clone());
+
+            let event = match event {
+                Ok(domain_event) => domain_event,
+
+                Err(error) => {
+                    warn!(event = %transaction, error = ?error, "Cannot parse communication domain event");
+                    return Ok(());
+                }
+            };
+
+            match event.event.r#type {
                 MessageRequestType::CreateMessage => {
                     let create_message =
-                        json::from_value::<CreateMessageEvent>(domain_event.event.request)?;
+                        json::from_value::<CreateMessageEvent>(event.event.request)?;
 
                     if matches!(create_message.message_type, MessageType::Message) {
                         if let Some((worker, sync_info)) =
@@ -106,7 +115,7 @@ pub fn start(
                 }
 
                 MessageRequestType::UpdatePatch => {
-                    let patch = json::from_value::<UpdatePatchEvent>(domain_event.event.request)?;
+                    let patch = json::from_value::<UpdatePatchEvent>(event.event.request)?;
 
                     if let Some((worker, sync_info)) = acquire_worker(&patch.card_id).await? {
                         worker
@@ -124,7 +133,7 @@ pub fn start(
                 }
 
                 MessageRequestType::RemovePatch => {
-                    let patch = json::from_value::<RemovePatchEvent>(domain_event.event.request)?;
+                    let patch = json::from_value::<RemovePatchEvent>(event.event.request)?;
 
                     if let Some((worker, sync_info)) = acquire_worker(&patch.card_id).await? {
                         worker
@@ -155,12 +164,14 @@ pub fn start(
 
             if let Ok(message) = message {
                 if let Err(error) = process_message(&message, &supervisor, &context).await {
-                    warn!(%error, "transaction error");
+                    warn!(%error, "Transaction error");
                 }
 
-                consumer
-                    .commit_message(&message, rdkafka::consumer::CommitMode::Async)
-                    .unwrap();
+                if let Err(error) =
+                    consumer.commit_message(&message, rdkafka::consumer::CommitMode::Async)
+                {
+                    error!(%error, "Cannot commit message");
+                }
             }
         }
     });
