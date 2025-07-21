@@ -22,6 +22,7 @@ use super::{
     export::Exporter,
     state::{Progress, SyncState},
 };
+use crate::integration::WorkspaceIntegration;
 use crate::telegram::{ChatExt, MessageExt};
 use crate::worker::sync::state::HulyMessage;
 use crate::{config::CONFIG, integration::TelegramIntegration};
@@ -124,7 +125,7 @@ impl SyncChat {
 
             match exporter.ensure_card(context.is_fresh).await? {
                 CardState::Exists => {
-                    //
+                    trace!(card_id = context.info.huly_card_id, "Card exists");
                 }
 
                 CardState::Created => {
@@ -132,6 +133,7 @@ impl SyncChat {
                 }
 
                 CardState::NotExists => {
+                    warn!(card_id = context.info.huly_card_id, "Card does not exist");
                     bail!("NoCard");
                 }
             };
@@ -468,7 +470,7 @@ impl Sync {
             }
         }
 
-        trace!(
+        debug!(
             all_chats,
             sync_active, sync_disabled, sync_unknown, "Sync stats"
         );

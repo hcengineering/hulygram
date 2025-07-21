@@ -91,10 +91,9 @@ impl Exporter {
                     .created_on(now)
                     .modified_by(&self.context.worker.social_id)
                     .modified_on(now)
-                    .object_space(space_id)
+                    .object_space(space_id.clone())
                     .attributes(serde_json::json!({
                         "title": &info.huly_card_title,
-                        "private": true,
                     }))
                     .build()?;
 
@@ -106,6 +105,8 @@ impl Exporter {
                         Some(&info.huly_card_id),
                     )
                     .await?;
+
+                debug!(space_id, is_private = info.is_private, "Card created");
 
                 CardState::Created
             } else {

@@ -287,6 +287,7 @@ async fn get_state(
     }
 }
 
+#[instrument(level = "debug", skip_all, fields(phone = %phone))]
 async fn get_chats(
     request: HttpRequest,
     phone: Path<String>,

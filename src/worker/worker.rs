@@ -54,7 +54,7 @@ impl From<RecvError> for WorkerRequestError {
 pub enum WorkerRequest {
     RequestState(Sender<Result<WorkerStateResponse, WorkerRequestError>>),
 
-    RequestChannels(
+    RequestChats(
         WorkspaceUuid,
         Sender<Result<Vec<ChatEntry>, WorkerRequestError>>,
     ),
@@ -133,7 +133,7 @@ impl WorkerAccess for mpsc::Sender<WorkerRequest> {
         workspace: WorkspaceUuid,
     ) -> Result<Vec<ChatEntry>, WorkerRequestError> {
         let (sender, receiver) = channel();
-        self.send(WorkerRequest::RequestChannels(workspace, sender))
+        self.send(WorkerRequest::RequestChats(workspace, sender))
             .await?;
 
         receiver.response("request_chats").await
@@ -350,7 +350,7 @@ impl Worker {
                                 sender.send(Ok(self.state_response(&state)));
                             }
 
-                            (WorkerState::Authorized(_user), WorkerRequest::RequestChannels(requested_workspace_id, sender)) => {
+                            (WorkerState::Authorized(_user), WorkerRequest::RequestChats(requested_workspace_id, sender)) => {
                                 trace!(workspace_id = %requested_workspace_id,"Request channels");
 
                                 let mut result = Vec::default();
