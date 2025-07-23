@@ -5,7 +5,7 @@ use anyhow::{Result, bail};
 use grammers_client::InputMessage;
 use grammers_client::types::Chat;
 use grammers_client::types::Message;
-use hulyrs::services::types::WorkspaceUuid;
+use hulyrs::services::core::WorkspaceUuid;
 use multimap::MultiMap;
 use tokio::{
     self,

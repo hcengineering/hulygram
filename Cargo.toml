@@ -61,7 +61,7 @@ redis = { version = "0.32.2", features = [
     "connection-manager",
     "sentinel",
 ] }
-rdkafka = { version = "0.37.0", features = [
+rdkafka = { version = "0.38.0", features = [
     "cmake-build",
     "ssl-vendored",
     "tracing",

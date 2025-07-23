@@ -2,8 +2,8 @@ use chrono::{DateTime, Utc};
 use grammers_client::types::{Chat, Message, User};
 use grammers_tl_types as tl;
 use hulyrs::services::{
+    core::SocialIdType,
     transactor::person::{EnsurePersonRequest, EnsurePersonRequestBuilder},
-    types::SocialIdType,
 };
 
 use crate::worker::sync::generate_markdown_message;

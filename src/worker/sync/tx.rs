@@ -2,11 +2,12 @@ use std::collections::HashSet;
 
 use anyhow::{Ok, Result};
 use hulyrs::services::{
+    core::{PersonId, PersonUuid},
     transactor::{
         TransactorClient,
+        backend::http::HttpBackend,
         document::{DocumentClient, FindOptionsBuilder},
     },
-    types::{PersonId, PersonUuid},
 };
 use serde_json::{Value, json};
 use tracing::*;
@@ -29,7 +30,7 @@ fn id(v: Option<Value>) -> Option<String> {
     v.and_then(|v| v["_id"].as_str().map(ToOwned::to_owned))
 }
 
-impl TransactorExt for TransactorClient {
+impl TransactorExt for TransactorClient<HttpBackend> {
     async fn find_channel(&self, channel_id: &str) -> Result<bool> {
         let query = json!({
             "_id": channel_id,

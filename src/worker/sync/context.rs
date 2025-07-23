@@ -3,7 +3,8 @@ use std::sync::Arc;
 use anyhow::Result;
 use grammers_client::types::Chat;
 use hulyrs::services::kvs::KvsClient;
-use hulyrs::services::{jwt::ClaimsBuilder, transactor::TransactorClient, types::WorkspaceUuid};
+use hulyrs::services::transactor::backend::http::HttpBackend;
+use hulyrs::services::{core::WorkspaceUuid, jwt::ClaimsBuilder, transactor::TransactorClient};
 use serde::{Deserialize, Serialize};
 use serde_json as json;
 
@@ -33,7 +34,7 @@ pub struct SyncInfo {
 pub struct SyncContext {
     pub worker: Arc<WorkerContext>,
 
-    pub transactor: TransactorClient,
+    pub transactor: TransactorClient<HttpBackend>,
     pub blobs: BlobClient,
 
     pub info: SyncInfo,
@@ -146,7 +147,7 @@ impl SyncContext {
         }
     }
 
-    pub fn transactor(&self) -> &TransactorClient {
+    pub fn transactor(&self) -> &TransactorClient<HttpBackend> {
         &self.transactor
     }
 }

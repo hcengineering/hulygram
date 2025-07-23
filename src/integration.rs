@@ -11,8 +11,8 @@ use hulyrs::services::{
         AccountClient, AddSocialIdToPersonParams, Integration, IntegrationKey,
         PartialIntegrationKey, SelectWorkspaceParams, WorkspaceKind, WorkspaceMode,
     },
+    core::{AccountUuid, PersonId, SocialIdId, SocialIdType, WorkspaceUuid},
     jwt::{Claims, ClaimsBuilder},
-    types::{AccountUuid, PersonId, SocialIdId, SocialIdType, WorkspaceUuid},
 };
 
 use crate::config::hulyrs::SERVICES;

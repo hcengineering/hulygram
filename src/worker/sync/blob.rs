@@ -1,5 +1,5 @@
 use anyhow::Result;
-use hulyrs::services::{jwt::ClaimsBuilder, types::WorkspaceUuid};
+use hulyrs::services::{core::WorkspaceUuid, jwt::ClaimsBuilder};
 use reqwest::{
     Body, Client,
     multipart::{Form, Part},

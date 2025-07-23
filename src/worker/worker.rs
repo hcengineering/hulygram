@@ -7,7 +7,7 @@ use grammers_client::{
     session::Session,
     types::{LoginToken, PasswordToken, User},
 };
-use hulyrs::services::types::WorkspaceUuid;
+use hulyrs::services::core::WorkspaceUuid;
 use serde::Serialize;
 use tokio::{
     select,

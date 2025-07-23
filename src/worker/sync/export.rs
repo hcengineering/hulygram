@@ -4,6 +4,7 @@ use anyhow::{Result, anyhow};
 use chrono::{DateTime, Utc};
 use grammers_client::types::{Chat, Media, Message};
 use hulyrs::services::{
+    core::PersonId,
     transactor::{
         comm::{
             BlobDataBuilder, BlobPatchEventBuilder, BlobPatchOperation, CreateMessageEventBuilder,
@@ -13,7 +14,6 @@ use hulyrs::services::{
         document::CreateDocumentBuilder,
         person::EnsurePerson,
     },
-    types::PersonId,
 };
 use redis::AsyncCommands;
 use tracing::*;

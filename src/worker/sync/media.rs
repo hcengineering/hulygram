@@ -9,7 +9,7 @@ use grammers_client::{
         media::{Document, Photo},
     },
 };
-use hulyrs::services::types::PersonId;
+use hulyrs::services::core::PersonId;
 use tokio::time;
 use tracing::*;
 use uuid::Uuid;

@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use grammers_client::{Client as TelegramClient, types::User};
-use hulyrs::services::types::{AccountUuid, SocialIdId};
+use hulyrs::services::core::{AccountUuid, SocialIdId};
 
 use crate::context::GlobalContext;
 
