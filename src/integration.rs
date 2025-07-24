@@ -91,18 +91,6 @@ pub trait TelegramIntegration {
     async fn find_ids(&self, user_id: i64) -> Result<(AccountUuid, SocialIdId)>;
 
     async fn ensure_social_id(&self, claims: &Claims, id: i64) -> Result<PersonId>;
-
-    async fn ensure_account_integration(
-        &self,
-        social_id: &PersonId,
-        data: AccountIntegrationData,
-    ) -> Result<()>;
-
-    async fn ensure_workspace_integration(
-        &self,
-        social_id: &PersonId,
-        workspace: WorkspaceUuid,
-    ) -> Result<()>;
 }
 
 pub struct AccountIntegration {
@@ -338,68 +326,5 @@ impl TelegramIntegration for AccountClient {
         };
 
         Ok(social_id)
-    }
-
-    // finds or creates integration for the account, identified by claims
-    async fn ensure_account_integration(
-        &self,
-        social_id: &PersonId,
-        data: AccountIntegrationData,
-    ) -> Result<()> {
-        if self
-            .get_integration(&IntegrationKey {
-                social_id: social_id.to_owned(),
-                kind: INTEGRATION_KIND.to_string(),
-                workspace_uuid: None,
-            })
-            .await?
-            .is_none()
-        {
-            // personal integration
-            let personal = Integration {
-                social_id: social_id.to_owned(),
-                kind: INTEGRATION_KIND.to_string(),
-                workspace_uuid: None,
-                data: Some(json::to_value(data)?),
-            };
-
-            self.create_integration(&personal).await?;
-        }
-
-        Ok(())
-    }
-
-    // ensure default workspace integration is created
-    async fn ensure_workspace_integration(
-        &self,
-        social_id: &PersonId,
-        workspace: WorkspaceUuid,
-    ) -> Result<()> {
-        if self
-            .get_integration(&IntegrationKey {
-                social_id: social_id.to_owned(),
-                kind: INTEGRATION_KIND.to_string(),
-                workspace_uuid: Some(workspace),
-            })
-            .await?
-            .is_none()
-        {
-            let data = IntegrationData {
-                config: Config {
-                    channels: Vec::default(),
-                },
-            };
-
-            let workspace = Integration {
-                social_id: social_id.to_owned(),
-                kind: INTEGRATION_KIND.to_string(),
-                workspace_uuid: Some(workspace),
-                data: Some(json::to_value(data)?),
-            };
-
-            self.create_integration(&workspace).await?;
-        }
-
-        Ok(())
     }
 }
