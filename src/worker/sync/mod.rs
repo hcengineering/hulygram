@@ -1,6 +1,6 @@
 mod blob;
 pub(super) mod context;
-mod export;
+pub mod export;
 mod media;
 pub mod state;
 mod sync;

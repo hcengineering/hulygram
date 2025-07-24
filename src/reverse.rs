@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock};
 
 use anyhow::Result;
 use hulyrs::services::transactor::{
@@ -23,7 +23,7 @@ use crate::{
     context::GlobalContext,
     worker::{
         SyncContext, WorkerHintsBuilder, WorkerRequest,
-        sync::{ReverseUpdate, SyncInfo},
+        sync::{ReverseUpdate, SyncInfo, export},
     },
 };
 
@@ -44,6 +44,9 @@ pub fn create_consumer(topic: &str) -> Result<StreamConsumer> {
 
     Ok(consumer)
 }
+
+const TELEGRAM: LazyLock<Value> =
+    LazyLock::new(|| serde_json::to_value(export::HULYGRAM_ORIGIN).unwrap());
 
 pub fn start(
     supervisor: Arc<super::worker::Supervisor>,
@@ -97,27 +100,39 @@ pub fn start(
                     let create_message =
                         json::from_value::<CreateMessageEvent>(event.event.request)?;
 
-                    if matches!(create_message.message_type, MessageType::Message) {
-                        if let Some((worker, sync_info)) =
+                    let from_telegram = create_message
+                        .extra
+                        .map(|e| e.get(export::HULYGRAM_ORIGIN) == Some(&TELEGRAM))
+                        .unwrap_or(false);
+
+                    if !from_telegram
+                        && matches!(create_message.message_type, MessageType::Message)
+                        && let Some((worker, sync_info)) =
                             acquire_worker(&create_message.card_id).await?
-                        {
-                            worker
-                                .send(WorkerRequest::Reverse(
-                                    sync_info,
-                                    ReverseUpdate::MessageCreated {
-                                        huly_message_id: create_message.message_id.unwrap(),
-                                        content: create_message.content,
-                                    },
-                                ))
-                                .await?;
-                        }
+                    {
+                        worker
+                            .send(WorkerRequest::Reverse(
+                                sync_info,
+                                ReverseUpdate::MessageCreated {
+                                    huly_message_id: create_message.message_id.unwrap(),
+                                    content: create_message.content,
+                                },
+                            ))
+                            .await?;
                     }
                 }
 
                 MessageRequestType::UpdatePatch => {
                     let patch = json::from_value::<UpdatePatchEvent>(event.event.request)?;
 
-                    if let Some((worker, sync_info)) = acquire_worker(&patch.card_id).await? {
+                    let from_telegram = patch
+                        .extra
+                        .map(|e| e.get(export::HULYGRAM_ORIGIN) == Some(&TELEGRAM))
+                        .unwrap_or(false);
+
+                    if !from_telegram
+                        && let Some((worker, sync_info)) = acquire_worker(&patch.card_id).await?
+                    {
                         worker
                             .send(WorkerRequest::Reverse(
                                 sync_info,
@@ -127,8 +142,6 @@ pub fn start(
                                 },
                             ))
                             .await?;
-
-                        //
                     }
                 }
 
@@ -144,8 +157,6 @@ pub fn start(
                                 },
                             ))
                             .await?;
-
-                        //
                     }
                 }
 

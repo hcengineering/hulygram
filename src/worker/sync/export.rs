@@ -28,6 +28,9 @@ use crate::{
 
 pub type MessageId = String;
 
+pub const HULYGRAM_ORIGIN: &str = "Hulygram-Origin";
+pub const TELEGRAM: &str = "telegram";
+
 #[derive(Clone)]
 pub(super) struct Exporter {
     global_context: Arc<GlobalContext>,
@@ -182,6 +185,7 @@ impl Exporter {
                 .social_id(person_id)
                 .date(message.date())
                 .options(options)
+                .extra([(HULYGRAM_ORIGIN.into(), TELEGRAM.into())])
                 .build()
                 .unwrap();
 
@@ -207,6 +211,7 @@ impl Exporter {
                         .social_id(person_id)
                         .card_id(&info.huly_card_id)
                         .content(message.huly_markdown_text())
+                        .extra([(HULYGRAM_ORIGIN.into(), TELEGRAM.into())])
                         .build()
                         .unwrap();
 
@@ -279,6 +284,7 @@ impl Exporter {
                 .social_id(person_id)
                 .card_id(&self.context.info.huly_card_id)
                 .content(telegram_message.huly_markdown_text())
+                .extra([(HULYGRAM_ORIGIN.into(), TELEGRAM.into())])
                 .build()
                 .unwrap();
 
