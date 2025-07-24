@@ -1,4 +1,4 @@
-use std::{mem::discriminant, sync::Arc, time::Duration};
+use std::{sync::Arc, time::Duration};
 
 use actix_cors::Cors;
 use actix_web::{
@@ -8,7 +8,10 @@ use actix_web::{
     middleware::{self, Next},
     web::{self, Data, Json, Path},
 };
-use hulyrs::services::jwt::{Claims, actix::ServiceRequestExt};
+use hulyrs::services::{
+    core::SocialIdId,
+    jwt::{Claims, actix::ServiceRequestExt},
+};
 use serde::{Deserialize, Serialize};
 use tokio::task::JoinHandle;
 use tracing::*;
@@ -16,7 +19,7 @@ use tracing::*;
 use crate::{
     config::CONFIG,
     context::GlobalContext,
-    integration::{AccountIntegrationData, TelegramIntegration},
+    integration::TelegramIntegration,
     worker::{
         Supervisor, WorkerAccess, WorkerHintsBuilder, WorkerRequestError, WorkerStateResponse,
     },
@@ -187,9 +190,13 @@ impl From<WorkerStateResponse> for IntegrationStatus {
 }
 
 #[derive(Serialize, Debug)]
+#[serde(rename_all = "camelCase")]
 struct Integration {
     number: String,
     status: IntegrationStatus,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    social_id: Option<SocialIdId>,
 }
 
 #[derive(Deserialize, Debug)]
@@ -228,6 +235,7 @@ async fn enumerate(
         trace!(%phone, %state, "Worker state");
 
         integrations.push(Integration {
+            social_id: Some(integration.social_id),
             number: integration.phone.clone(),
             status: state.into(),
         });
@@ -264,6 +272,7 @@ async fn get_state(
         let state = worker.request_state().await?;
 
         let response = HttpResponse::Ok().json(Integration {
+            social_id: Some(integration.social_id),
             number: integration.phone,
             status: state.into(),
         });
@@ -365,7 +374,7 @@ async fn command(
 
     debug!(?phone, ?command, "Integration command");
 
-    let old_state = discriminant(&state);
+    //    let old_state = discriminant(&state);
 
     let state = match (&state, command) {
         (WorkerStateResponse::WantCode, Command::Next { input }) => {
@@ -382,30 +391,19 @@ async fn command(
 
     match state {
         Ok(state) => {
-            if let WorkerStateResponse::Authorized(user) = &state {
-                if old_state != discriminant(&state) {
-                    let claims = request.extensions().get::<Claims>().unwrap().to_owned();
+            let social_id = if let WorkerStateResponse::Authorized(user) = &state {
+                let claims = request.extensions().get::<Claims>().unwrap().to_owned();
 
-                    let account = services.account();
+                let account = services.account();
+                let social_id = account.ensure_social_id(&claims, user.id()).await?;
 
-                    let social_id = account.ensure_social_id(&claims, user.id()).await?;
-
-                    account
-                        .ensure_account_integration(
-                            &social_id,
-                            AccountIntegrationData {
-                                phone: phone.clone(),
-                            },
-                        )
-                        .await?;
-
-                    account
-                        .ensure_workspace_integration(&social_id, claims.workspace()?)
-                        .await?;
-                }
-            }
+                Some(social_id)
+            } else {
+                None
+            };
 
             let status = Integration {
+                social_id,
                 number: phone,
                 status: state.into(),
             };
