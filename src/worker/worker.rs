@@ -355,15 +355,14 @@ impl Worker {
 
                                 let mut result = Vec::default();
 
-                                for (workspace_id, chat, mode) in self.sync.chats() {
-                                    if *workspace_id == requested_workspace_id {
+                                for (chat, mode) in self.sync.chats(requested_workspace_id) {
                                         result.push(ChatEntry {
                                             id: chat.id().to_string(),
                                             name: chat.card_title(),
                                             chat_type: chat.chat_type(),
-                                            mode: *mode,
+                                            mode,
                                         });
-                                    }
+
                                 }
 
                                 let _ = sender.send(Ok(result));

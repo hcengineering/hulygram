@@ -391,6 +391,8 @@ use grammers_client::Client as TelegramClient;
 pub struct Sync {
     syncs: MultiMap<String, Arc<SyncChat>>,
     chats: Vec<(WorkspaceUuid, Arc<Chat>, SyncMode)>,
+    all_chats: Vec<Arc<Chat>>,
+    integrations: Vec<WorkspaceIntegration>,
     cleanup: Arc<Mutex<Vec<JoinHandle<()>>>>,
     context: Arc<GlobalContext>,
     debouncer: Mutex<HashSet<(String, i32)>>,
@@ -402,6 +404,8 @@ impl Sync {
             context: global,
             syncs: MultiMap::new(),
             chats: Vec::default(),
+            all_chats: Vec::default(),
+            integrations: Vec::default(),
             cleanup: Arc::default(),
             debouncer: Mutex::default(),
         }
@@ -417,27 +421,26 @@ impl Sync {
 
         let me = Arc::new(context.telegram.get_me().await?);
 
-        let mut integrations = global_services
+        self.integrations = global_services
             .account()
             .find_workspace_integrations(me.id())
             .await?;
 
-        let mut chats = Vec::new();
         let mut iter_dialogs = context.telegram.iter_dialogs();
 
         while let Some(dialog) = iter_dialogs.next().await? {
             if !dialog.chat().is_deleted() {
-                chats.push(Arc::new(dialog.chat().to_owned()));
+                self.all_chats.push(Arc::new(dialog.chat().to_owned()));
             }
         }
 
-        let all_chats = chats.len();
+        let all_chats = self.all_chats.len();
         let mut sync_active = 0;
         let mut sync_disabled = 0;
         let mut sync_unknown = 0;
 
-        for chat in chats {
-            for integration in &mut integrations {
+        for chat in &self.all_chats {
+            for integration in &self.integrations {
                 let mode = match integration.find_config(chat.id()) {
                     Some(config) if config.enabled => {
                         let context = Arc::new(
@@ -544,6 +547,25 @@ impl Sync {
         self.cleanup.lock().await.push(handle);
 
         Ok(())
+    }
+
+    pub fn chats(&self, workspace: WorkspaceUuid) -> Vec<(Arc<Chat>, SyncMode)> {
+        if self
+            .integrations
+            .iter()
+            .any(|i| i.workspace_id == workspace)
+        {
+            self.chats
+                .iter()
+                .filter(|(w, _, _)| *w == workspace)
+                .map(|(_, c, m)| (c.clone(), *m))
+                .collect()
+        } else {
+            self.all_chats
+                .iter()
+                .map(|c| (c.clone(), SyncMode::Unknown))
+                .collect()
+        }
     }
 
     pub async fn handle_update(&mut self, update: grammers_client::types::Update) -> Result<()> {
@@ -659,10 +681,6 @@ impl Sync {
         // probably post to other workspaces
 
         Ok(())
-    }
-
-    pub fn chats(&self) -> &[(WorkspaceUuid, Arc<Chat>, SyncMode)] {
-        &self.chats
     }
 
     pub async fn abort(self) {
