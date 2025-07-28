@@ -444,7 +444,8 @@ impl Sync {
                 let mode = match integration.find_config(chat.id()) {
                     Some(config) if config.enabled => {
                         let context = Arc::new(
-                            SyncContext::new(context.clone(), chat.clone(), integration).await?,
+                            SyncContext::new(context.clone(), chat.clone(), integration, config)
+                                .await?,
                         );
 
                         let (sync, export) = SyncChat::spawn(context).await;

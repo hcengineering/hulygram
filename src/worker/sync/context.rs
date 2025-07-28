@@ -11,7 +11,7 @@ use serde_json as json;
 use super::state::SyncState;
 use crate::config::CONFIG;
 use crate::config::hulyrs::SERVICES;
-use crate::integration::WorkspaceIntegration;
+use crate::integration::{Access, ChannelConfig, WorkspaceIntegration};
 use crate::telegram::ChatExt;
 use crate::worker::context::WorkerContext;
 use crate::worker::sync::blob::BlobClient;
@@ -56,6 +56,7 @@ impl SyncContext {
         worker: Arc<WorkerContext>,
         chat: Arc<Chat>,
         integration: &WorkspaceIntegration,
+        config: &ChannelConfig,
     ) -> anyhow::Result<Self> {
         let huly_workspace_id = integration.workspace_id;
         let transactor = SERVICES.new_transactor_client(
@@ -85,7 +86,7 @@ impl SyncContext {
                     huly_card_id: ksuid::Ksuid::generate().to_base62(),
                     huly_card_title: chat.card_title(),
 
-                    is_private: !CONFIG.allowed_dialog_ids.contains(&chat.id().to_string()),
+                    is_private: matches!(config.access, Access::Private),
                 };
 
                 (info, true)

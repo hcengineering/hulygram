@@ -230,7 +230,7 @@ impl Worker {
         })
         .await?;
 
-        trace!(%phone, %config.id, "Connected");
+        debug!(%phone, %config.id, "Connected");
 
         Ok(Self {
             id: config.id.clone(),

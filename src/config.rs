@@ -1,4 +1,4 @@
-use std::{collections::HashSet, num::NonZero, path::Path, sync::LazyLock};
+use std::{num::NonZero, path::Path, sync::LazyLock};
 
 use serde_with::{StringWithSeparator, formats::CommaSeparator, serde_as};
 
@@ -49,9 +49,6 @@ pub struct Config {
     pub redis_password: String,
     pub redis_mode: RedisMode,
     pub redis_service: String,
-
-    #[serde_as(as = "StringWithSeparator::<CommaSeparator, String>")]
-    pub allowed_dialog_ids: HashSet<String>,
 
     pub get_file_rate_limit: NonZero<u32>,
     pub get_history_rate_limit: NonZero<u32>,
