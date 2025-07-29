@@ -658,7 +658,7 @@ impl Sync {
 
     pub async fn handle_reverse_update(
         &self,
-        sync_info: SyncInfo,
+        sync_info: &SyncInfo,
         update: ReverseUpdate,
     ) -> Result<()> {
         let mut debouncer = self.debouncer.lock().await;

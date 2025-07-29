@@ -412,8 +412,14 @@ impl Worker {
                             }
 
                             (WorkerState::Authorized(_), WorkerRequest::Reverse(sync_info, reverse)) => {
-                                if let Err(error) = self.sync.handle_reverse_update(sync_info, reverse).await {
-                                    error!(%error, "Error while handling reverse update");
+                                if let Err(error) = self.sync.handle_reverse_update(&sync_info, reverse).await {
+                                    warn!(
+                                        phone=%sync_info.telegram_phone_number,
+                                        workspace_id = %sync_info.huly_workspace_id,
+                                        card_id = %sync_info.huly_card_id,
+                                        card_title = %sync_info.huly_card_title,
+                                        chat_id = %sync_info.telegram_chat_id,
+                                        %error, "Cannot handle reverse update");
                                 }
                             }
 
