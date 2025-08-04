@@ -1,7 +1,6 @@
 use std::{collections::HashMap, sync::Arc, time::Duration};
 
 use tokio::{
-    select,
     sync::{
         Mutex, broadcast,
         mpsc::{self, Sender},

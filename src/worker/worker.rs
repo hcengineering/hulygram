@@ -282,6 +282,29 @@ impl Worker {
             Ok(state) => state,
             Err(error) => {
                 error!(%phone, %error, "Authorization failed");
+
+                // receieve request for a while, and respond with unauthorized
+                // this will provide http client with proper error
+                while let Ok(Some(request)) =
+                    time::timeout(Duration::from_millis(500), inbox.recv()).await
+                {
+                    match request {
+                        WorkerRequest::RequestChats(_, response) => {
+                            let _ = response.send(Err(WorkerRequestError::Unauthorized));
+                        }
+
+                        WorkerRequest::ProvideCode(_, response)
+                        | WorkerRequest::ProvidePassword(_, response)
+                        | WorkerRequest::RequestState(response) => {
+                            let _ = response.send(Err(WorkerRequestError::Unauthorized));
+                        }
+
+                        _ => {
+                            //
+                        }
+                    }
+                }
+
                 return Ok(ExitReason::NotAuthorized);
             }
         };
@@ -366,15 +389,6 @@ impl Worker {
 
                                 let _ = sender.send(Ok(result));
                             }
-
-                           // (WorkerState::Authorized(_user), WorkerRequest::RequestUser(sender)) => {
-                             //   trace!(%phone, %state, "Request user");
-
-                           //     let user = self.telegram.get_me().await?;
-
-                            //    #[allow(unused)]
-                           //     sender.send(user);
-                          //  }
 
                             (WorkerState::WantCode(token), WorkerRequest::ProvideCode(code, response)) => {
                                 state = self.auth_code(token, &code).await?;
