@@ -41,7 +41,7 @@ impl SupervisorInner {
         let integrations = self.global.account().list_all_integrations().await?;
 
         for integration in integrations {
-            trace!(%integration.phone, "Automatically spawning worker");
+            debug!(%integration.phone, "Automatically spawning worker");
 
             self.spawn_worker(&integration.phone, WorkerHintsBuilder::default().build()?)
                 .await;
@@ -99,7 +99,7 @@ impl SupervisorInner {
                 'outer: loop {
                     let id = id.clone();
 
-                    trace!(%id, "Creating and running worker");
+                    debug!(%id, "Creating and running worker");
 
                     let delay = match Worker::new(global.clone(), config.clone()).await {
                         Ok(worker) => {

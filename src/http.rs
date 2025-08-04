@@ -49,6 +49,10 @@ impl actix_web::ResponseError for ApiError {
                 HttpResponse::Unauthorized().body("Unauthorized")
             }
 
+            ApiError::Worker(WorkerRequestError::Timeout(op)) => {
+                HttpResponse::RequestTimeout().body(format!("Timeout: {op}"))
+            }
+
             _ => {
                 tracing::error!(error=%self, "Internal error in http handler");
                 HttpResponse::InternalServerError().body("Internal Server Error")

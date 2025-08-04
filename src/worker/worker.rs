@@ -107,7 +107,7 @@ trait WorkerReceiver<T>: Future<Output = Result<WorkerResponse<T>, RecvError>> {
     where
         Self: Sized,
     {
-        const DURATION: Duration = Duration::from_secs(5);
+        const DURATION: Duration = Duration::from_secs(10);
 
         time::timeout(DURATION, self).await.map_err(|_| {
             error!(%op, "Worker request timed out");
@@ -269,7 +269,6 @@ impl Worker {
             let _ = self.persist_session().await;
         }
 
-        //if let Some(sync) = self.sync.take() {
         self.sync.abort().await;
 
         result.unwrap_or_else(ExitReason::Error)
