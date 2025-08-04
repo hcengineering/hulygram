@@ -96,7 +96,7 @@ impl SupervisorInner {
             let global = self.global.clone();
 
             let task = async move {
-                'outer: loop {
+                loop {
                     let id = id.clone();
 
                     debug!(%id, "Creating and running worker");
@@ -137,22 +137,7 @@ impl SupervisorInner {
 
                     if let Some(delay) = delay {
                         trace!(%id, ?delay, "Worker sleeping for before re-spawn");
-
-                        let until = time::Instant::now() + delay;
-
-                        loop {
-                            select! {
-                                _ = time::sleep_until(until) =>{
-                                    break;
-                                }
-
-                                message = receiver.recv() => {
-                                    if matches!(message, Some(WorkerRequest::Shutdown(_))) {
-                                        break 'outer;
-                                    }
-                                }
-                            }
-                        }
+                        time::sleep(delay).await;
                     } else {
                         break;
                     }
