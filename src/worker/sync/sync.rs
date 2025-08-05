@@ -1,7 +1,7 @@
 use std::collections::HashSet;
 use std::sync::{Arc, atomic::AtomicU32};
 
-use anyhow::{Result, bail};
+use anyhow::{Context, Result, bail};
 use grammers_client::InputMessage;
 use grammers_client::types::Chat;
 use grammers_client::types::Message;
@@ -123,7 +123,11 @@ impl SyncChat {
         async fn ensure_card(exporter: &mut Exporter, context: &SyncContext) -> Result<()> {
             use super::export::CardState;
 
-            match exporter.ensure_card(context.is_fresh).await? {
+            match exporter
+                .ensure_card(context.is_fresh)
+                .await
+                .context("EnsureCard")?
+            {
                 CardState::Exists => {
                     trace!(card_id = context.info.huly_card_id, "Card exists");
                 }
@@ -145,7 +149,7 @@ impl SyncChat {
 
         loop {
             #[instrument(level = "debug", skip_all, fields(event_type = %event.to_string(), event_id = %event.id()))]
-            async fn handle_event(
+            async fn process_event(
                 event: Arc<ImporterEvent>,
                 state: &SyncState,
                 exporter: &mut Exporter,
@@ -154,18 +158,33 @@ impl SyncChat {
                     ImporterEvent::BackfillMessage(message) => {
                         let telegram_id = message.id();
 
-                        let person_id = exporter.ensure_person(message).await?;
+                        let person_id = exporter
+                            .ensure_person(message)
+                            .await
+                            .context("EnsurePerson")?;
 
-                        match state.get_h_message(telegram_id).await? {
+                        match state
+                            .get_h_message(telegram_id)
+                            .await
+                            .context("GetHMessage")?
+                        {
                             None => {
-                                let huly_message =
-                                    exporter.new_message(&person_id, &message, false).await?;
+                                let huly_message = exporter
+                                    .new_message(&person_id, &message, false)
+                                    .await
+                                    .context("NewMessage")?;
 
-                                state.set_message(telegram_id, huly_message).await?;
+                                state
+                                    .set_message(telegram_id, huly_message)
+                                    .await
+                                    .context("SetMessage")?;
                             }
 
                             Some(huly_message) if message.last_date() > huly_message.date => {
-                                exporter.edit(&person_id, huly_message, message).await?;
+                                exporter
+                                    .edit(&person_id, huly_message, message)
+                                    .await
+                                    .context("Edit")?;
                             }
 
                             Some(_) => {
@@ -173,7 +192,10 @@ impl SyncChat {
                             }
                         }
 
-                        state.set_progress(Progress::Progress(telegram_id)).await?;
+                        state
+                            .set_progress(Progress::Progress(telegram_id))
+                            .await
+                            .context("SetProgress")?;
                     }
 
                     ImporterEvent::BackfillComplete => {
@@ -207,7 +229,7 @@ impl SyncChat {
                     ImporterEvent::MessageDeleted(messages) => {
                         for message in messages {
                             if let Some(huly_message) = state.get_h_message(*message).await? {
-                                exporter.delete(&huly_message.id).await?;
+                                exporter.delete(&huly_message.id).await.context("Delete")?;
                             }
                         }
                     }
@@ -236,7 +258,7 @@ impl SyncChat {
 
             if !card_ensured {
                 if let Err(error) = ensure_card(&mut exporter, &context).await {
-                    warn!(%error, "EnsureCard");
+                    warn!(?error, "Ensure card");
                     return;
                 }
 
@@ -244,8 +266,8 @@ impl SyncChat {
             }
 
             if let Some(event) = event {
-                if let Err(error) = handle_event(event, &context.state, &mut exporter).await {
-                    error!("Error while handling event: {:?}", error);
+                if let Err(error) = process_event(event, &context.state, &mut exporter).await {
+                    error!(?error, "Process event");
                 }
             } else {
                 panic!("Receivers closed")

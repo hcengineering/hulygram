@@ -1,6 +1,6 @@
 use std::{collections::HashMap, sync::Arc};
 
-use anyhow::{Result, anyhow};
+use anyhow::{Context, Result, anyhow};
 use chrono::{DateTime, Utc};
 use grammers_client::types::{Chat, Media, Message};
 use hulyrs::services::{
@@ -63,23 +63,32 @@ impl Exporter {
         let tx = self.context.transactor();
         let info = &self.context.info;
 
-        let ensured = if tx.find_channel(&self.context.info.huly_card_id).await? {
+        let ensured = if tx
+            .find_channel(&self.context.info.huly_card_id)
+            .await
+            .context("FindChannel")?
+        {
             CardState::Exists
         } else {
             if is_fresh {
                 let space_id = if info.is_private {
                     let person_id = tx
                         .find_person(self.context.worker.account_id)
-                        .await?
+                        .await
+                        .context("FindPerson")?
                         .ok_or_else(|| {
                             warn!("Person not found");
                             anyhow!("NoPerson")
                         })?;
 
-                    let space_id = tx.find_personal_space(&person_id).await?.ok_or_else(|| {
-                        warn!(%person_id, "Personal space not found");
-                        anyhow!("NoPersonSpace")
-                    })?;
+                    let space_id = tx
+                        .find_personal_space(&person_id)
+                        .await
+                        .context("FindPersonalSpace")?
+                        .ok_or_else(|| {
+                            warn!(%person_id, "Personal space not found");
+                            anyhow!("NoPersonSpace")
+                        })?;
 
                     space_id
                 } else {
@@ -107,7 +116,8 @@ impl Exporter {
                         create_channel,
                         Some(&info.huly_card_id),
                     )
-                    .await?;
+                    .await
+                    .context("Transaction")?;
 
                 debug!(space_id, is_private = info.is_private, "Card created");
 
@@ -141,16 +151,23 @@ impl Exporter {
 
         if let Some(person_id) = redis
             .hget::<_, _, Option<PersonId>>("socialid", &request.social_value)
-            .await?
+            .await
+            .context("RedisGet")?
         {
             return Ok(person_id.clone());
         } else {
             trace!(social_value = request.social_value, "CacheMiss");
-            let ensured = self.context.transactor().ensure_person(&request).await?;
+            let ensured = self
+                .context
+                .transactor()
+                .ensure_person(&request)
+                .await
+                .context("EnsurePersonTransaction")?;
 
             let _: () = redis
                 .hset("socialid", &request.social_value, &ensured.social_id)
-                .await?;
+                .await
+                .context("HSet")?;
 
             return Ok(ensured.social_id);
         }
@@ -195,7 +212,8 @@ impl Exporter {
                 self.global_context
                     .hulygun()
                     .tx(workspace_id, create_event, Some(&info.huly_card_id))
-                    .await?;
+                    .await
+                    .context("CreateTransaction")?;
             }
 
             Ok(huly_message_id)
@@ -221,7 +239,8 @@ impl Exporter {
                         self.global_context
                             .hulygun()
                             .tx(workspace_id, patch_event, Some(&info.huly_card_id))
-                            .await?;
+                            .await
+                            .context("PatchTransaction")?;
                     }
                 }
 
@@ -249,13 +268,15 @@ impl Exporter {
                 Media::Photo(photo) => {
                     photo
                         .transfer(self, message, huly_id.clone(), person_id.clone())
-                        .await?;
+                        .await
+                        .context("TransferPhoto")?;
                 }
 
                 Media::Document(document) => {
                     document
                         .transfer(self, message, huly_id.clone(), person_id.clone())
-                        .await?;
+                        .await
+                        .context("TransferDocument")?;
                 }
 
                 _ => {
@@ -386,7 +407,8 @@ impl Exporter {
                     attach_event,
                     Some(&info.huly_card_id),
                 )
-                .await?;
+                .await
+                .context("AttachTransaction")?;
 
             trace!(blob_id=%blob.blob_id, "Blob attached");
         }

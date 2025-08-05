@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use grammers_client::{
     Client as TelegramClient,
     client::files::DownloadIter,
@@ -52,7 +52,7 @@ impl TelegramExt for TelegramClient {
         // use me from worker context
         let limiter_key = self.get_me().await?.id();
 
-        while let Some(chunk) = download.next_timeout().await? {
+        while let Some(chunk) = download.next_timeout().await.context("NextTimeout")? {
             bytes.extend_from_slice(&chunk);
             limiter.until_key_ready(&limiter_key).await;
         }
@@ -71,34 +71,23 @@ impl TelegramExt for TelegramClient {
 
         let mut download = self.iter_download(d);
 
-        let limiter_key = self.get_me().await?.id();
+        let limiter_key = self.get_me().await.context("GetMe")?.id();
 
         let mut nchunk = 0;
         loop {
             limiter.until_key_ready(&limiter_key).await;
 
-            match download.next_timeout().await {
-                Ok(Some(chunk)) => {
+            match download.next_timeout().await.context("NextTimeout")? {
+                Some(chunk) => {
                     nchunk += 1;
                     trace!(nchunk, "Chunk");
                     sender.send(Ok(chunk)).await?
                 }
-                Ok(None) => {
+                None => {
                     break {
                         trace!("Download complete");
                         Ok(())
                     };
-                }
-                Err(error) => {
-                    let message = error.to_string();
-
-                    warn!(%error, "Chunk error");
-
-                    sender
-                        .send(Err(std::io::Error::new(std::io::ErrorKind::Other, error)))
-                        .await?;
-
-                    break Err(anyhow::anyhow!("{}", message));
                 }
             }
         }
@@ -130,7 +119,10 @@ impl MediaTransfer for Photo {
             let telegram = &exporter.context.worker.telegram;
             let limiters = &exporter.context.worker.global.limiters();
 
-            let blob = telegram.download(&self, &limiters.get_file).await?;
+            let blob = telegram
+                .download(&self, &limiters.get_file)
+                .await
+                .context("Download")?;
 
             let blob_id = Uuid::new_v4();
             let length = blob.len();
@@ -139,7 +131,9 @@ impl MediaTransfer for Photo {
             let ready = {
                 let blobs = &exporter.context.blobs;
 
-                let (sender, ready) = blobs.upload(blob_id, length, image_info.mimetype)?;
+                let (sender, ready) = blobs
+                    .upload(blob_id, length, image_info.mimetype)
+                    .context("Upload")?;
 
                 sender.send(Ok(blob)).await?;
 
@@ -166,7 +160,8 @@ impl MediaTransfer for Photo {
 
         exporter
             .attach(blob, message_id, social_id, message.date())
-            .await?;
+            .await
+            .context("Attach")?;
 
         Ok(())
     }
@@ -194,8 +189,11 @@ impl MediaTransfer for Document {
 
             debug!(%blob_id, length, mime_type, "Transferring document");
 
-            let (upload, ready) = blobs.upload(blob_id, length, mime_type)?;
-            telegram.stream(&self, upload, &limiters.get_file).await?;
+            let (upload, ready) = blobs.upload(blob_id, length, mime_type).context("Upload")?;
+            telegram
+                .stream(&self, upload, &limiters.get_file)
+                .await
+                .context("Stream")?;
 
             let _ = ready.await?;
 
@@ -219,5 +217,28 @@ impl MediaTransfer for Document {
             .await?;
 
         Ok(())
+    }
+}
+
+mod test {
+    #[test]
+    fn test_error() {
+        use anyhow::{Context, Result, bail};
+
+        fn f3() -> Result<()> {
+            bail!("root error");
+        }
+
+        fn f2() -> Result<()> {
+            Ok(f3().context("f3")?)
+        }
+
+        fn f1() -> Result<()> {
+            Ok(f2().context("f2")?)
+        }
+
+        if let Err(error) = f1() {
+            println!("{:?}", error);
+        }
     }
 }
