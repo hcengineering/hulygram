@@ -1,6 +1,6 @@
 [package]
 name = "hulygram"
-version = "0.2.5"
+version = "0.2.6"
 edition = "2024"
 rust-version = "1.88.0"
 
@@ -54,7 +54,7 @@ tikv-jemallocator = { version = "0.6.0", features = [
     "profiling",
     "unprefixed_malloc_on_supported_platforms",
 ] }
-jemalloc_pprof = { version = "0.7.0", features = ["symbolize"] }
+jemalloc_pprof = { version = "0.8.0", features = ["symbolize"] }
 dashmap = { version = "6.1.0", features = ["serde"] }
 redis = { version = "0.32.2", features = [
     "tokio-comp",

@@ -146,7 +146,7 @@ impl TelegramIntegration for AccountClient {
 
         //let caller_account = self.assume_claims(claims)?;
 
-        let account = &self.account;
+        let account = &self.account.unwrap();
 
         trace!(%account, "Find account integrations");
 
