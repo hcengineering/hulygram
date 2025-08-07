@@ -38,96 +38,67 @@ pub(super) struct Exporter {
     groups: HashMap<i64, MessageId>,
 }
 
-pub enum CardState {
-    Exists,
-    Created,
-    NotExists,
-}
-
 impl Exporter {
     #[instrument(level = "trace", skip_all, fields(chat = %context.chat.id(), user = %context.worker.me.id(), account = %context.worker.account_id, workspace = %context.info.huly_workspace_id))]
-    pub(super) async fn new(context: Arc<SyncContext>) -> Result<Self> {
+    pub(super) fn new(context: Arc<SyncContext>) -> Self {
         let global_context = context.worker.global.clone();
 
-        let exporter = Self {
+        Self {
             global_context,
             context,
             groups: HashMap::new(),
-        };
-
-        Ok(exporter)
+        }
     }
 
-    #[instrument(level = "trace", skip_all)]
-    pub async fn ensure_card(&mut self, is_fresh: bool) -> Result<CardState> {
-        let tx = self.context.transactor();
-        let info = &self.context.info;
+    pub async fn create_card(context: &SyncContext) -> Result<()> {
+        let info = &context.info;
 
-        let ensured = if tx
-            .find_channel(&self.context.info.huly_card_id)
-            .await
-            .context("FindChannel")?
-        {
-            CardState::Exists
+        let space_id = if info.is_private {
+            let account_id = context.worker.account_id;
+            let space_id = context
+                .transactor()
+                .find_personal_space(account_id)
+                .await
+                .context("FindPersonalSpace")?
+                .ok_or_else(|| {
+                    warn!(%account_id, "Personal space not found");
+                    anyhow!("NoPersonSpace")
+                })?;
+
+            space_id
         } else {
-            if is_fresh {
-                let space_id = if info.is_private {
-                    let person_id = tx
-                        .find_person(self.context.worker.account_id)
-                        .await
-                        .context("FindPerson")?
-                        .ok_or_else(|| {
-                            warn!("Person not found");
-                            anyhow!("NoPerson")
-                        })?;
-
-                    let space_id = tx
-                        .find_personal_space(&person_id)
-                        .await
-                        .context("FindPersonalSpace")?
-                        .ok_or_else(|| {
-                            warn!(%person_id, "Personal space not found");
-                            anyhow!("NoPersonSpace")
-                        })?;
-
-                    space_id
-                } else {
-                    "card:space:Default".to_owned()
-                };
-
-                let now = chrono::Utc::now();
-                let create_channel = CreateDocumentBuilder::default()
-                    .object_id(&info.huly_card_id)
-                    .object_class("chat:masterTag:Channel")
-                    .created_by(&self.context.worker.social_id)
-                    .created_on(now)
-                    .modified_by(&self.context.worker.social_id)
-                    .modified_on(now)
-                    .object_space(space_id.clone())
-                    .attributes(serde_json::json!({
-                        "title": &info.huly_card_title,
-                    }))
-                    .build()?;
-
-                self.global_context
-                    .hulygun()
-                    .tx(
-                        info.huly_workspace_id,
-                        create_channel,
-                        Some(&info.huly_card_id),
-                    )
-                    .await
-                    .context("Transaction")?;
-
-                debug!(space_id, is_private = info.is_private, "Card created");
-
-                CardState::Created
-            } else {
-                CardState::NotExists
-            }
+            "card:space:Default".to_owned()
         };
 
-        Ok(ensured)
+        let now = chrono::Utc::now();
+        let create_channel = CreateDocumentBuilder::default()
+            .object_id(&info.huly_card_id)
+            .object_class("chat:masterTag:Channel")
+            .created_by(&context.worker.social_id)
+            .created_on(now)
+            .modified_by(&context.worker.social_id)
+            .modified_on(now)
+            .object_space(space_id.clone())
+            .attributes(serde_json::json!({
+                "title": &info.huly_card_title,
+            }))
+            .build()?;
+
+        context
+            .worker
+            .global
+            .hulygun()
+            .tx(
+                info.huly_workspace_id,
+                create_channel,
+                Some(&info.huly_card_id),
+            )
+            .await
+            .context("Transaction")?;
+
+        debug!(space_id, is_private = info.is_private, "Card created");
+
+        Ok(())
     }
 
     #[instrument(level = "trace", skip_all)]

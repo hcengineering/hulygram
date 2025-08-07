@@ -1,7 +1,8 @@
-use std::collections::HashSet;
+use core::panic;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, atomic::AtomicU32};
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result};
 use grammers_client::InputMessage;
 use grammers_client::types::Chat;
 use grammers_client::types::Message;
@@ -22,9 +23,10 @@ use super::{
     export::Exporter,
     state::{Progress, SyncState},
 };
-use crate::integration::WorkspaceIntegration;
+use crate::integration::{Access, ChannelConfig, WorkspaceIntegration};
 use crate::telegram::{ChatExt, MessageExt};
 use crate::worker::sync::state::HulyMessage;
+use crate::worker::sync::tx::TransactorExt;
 use crate::{config::CONFIG, integration::TelegramIntegration};
 
 struct SyncChat {
@@ -89,7 +91,9 @@ impl ImporterEvent {
 
 impl SyncChat {
     #[instrument(level = "trace", skip_all)]
-    async fn spawn(context: Arc<SyncContext>) -> (Self, JoinHandle<()>) {
+    async fn spawn(context: SyncContext) -> (Self, JoinHandle<()>) {
+        let context = Arc::new(context);
+
         let (sender_backfill, receiver_backfill) = mpsc::channel(1);
         let (sender_realtime, receiver_realtime) = mpsc::channel(16);
 
@@ -118,34 +122,7 @@ impl SyncChat {
         mut receiver_backfill: mpsc::Receiver<Arc<ImporterEvent>>,
         mut receiver_realtime: mpsc::Receiver<Arc<ImporterEvent>>,
     ) {
-        let mut exporter = Exporter::new(context.clone()).await.unwrap();
-
-        async fn ensure_card(exporter: &mut Exporter, context: &SyncContext) -> Result<()> {
-            use super::export::CardState;
-
-            match exporter
-                .ensure_card(context.is_fresh)
-                .await
-                .context("EnsureCard")?
-            {
-                CardState::Exists => {
-                    trace!(card_id = context.info.huly_card_id, "Card exists");
-                }
-
-                CardState::Created => {
-                    context.persist_info().await?;
-                }
-
-                CardState::NotExists => {
-                    warn!(card_id = context.info.huly_card_id, "Card does not exist");
-                    bail!("NoCard");
-                }
-            };
-
-            Ok(())
-        }
-
-        let mut card_ensured = false;
+        let mut exporter = Exporter::new(context.clone());
 
         loop {
             #[instrument(level = "debug", skip_all, fields(event_type = %event.to_string(), event_id = %event.id()))]
@@ -255,15 +232,6 @@ impl SyncChat {
                     None
                 }
             };
-
-            if !card_ensured {
-                if let Err(error) = ensure_card(&mut exporter, &context).await {
-                    warn!(?error, "Ensure card");
-                    return;
-                }
-
-                card_ensured = true;
-            }
 
             if let Some(event) = event {
                 if let Err(error) = process_event(event, &context.state, &mut exporter).await {
@@ -402,7 +370,6 @@ impl SyncChat {
 #[serde(rename_all = "lowercase")]
 pub enum SyncMode {
     Sync,
-    // NoCard,
     Disabled,
     Unknown,
 }
@@ -461,31 +428,179 @@ impl Sync {
         let mut sync_disabled = 0;
         let mut sync_unknown = 0;
 
+        #[derive(Debug)]
+        struct ChannelInfo {
+            title: String,
+            is_personal: bool,
+        }
+
+        #[derive(Debug, Default)]
+        struct WSCache {
+            inner: HashMap<WorkspaceUuid, HashMap<String, ChannelInfo>>,
+        }
+
+        impl WSCache {
+            async fn get(
+                &mut self,
+                context: &SyncContext,
+                workspace_id: WorkspaceUuid,
+            ) -> Result<&HashMap<String, ChannelInfo>> {
+                if !self.inner.contains_key(&workspace_id) {
+                    let enumerated = context.transactor.enumerate_channels().await?;
+                    let person_space = context
+                        .transactor
+                        .find_personal_space(context.worker.account_id)
+                        .await?;
+
+                    let mut channels = HashMap::default();
+
+                    for ch in enumerated {
+                        let is_personal = match &person_space {
+                            Some(space) if space == &ch.space => true,
+                            _ => false,
+                        };
+
+                        channels.insert(
+                            ch.id,
+                            ChannelInfo {
+                                title: ch.title,
+                                is_personal,
+                            },
+                        );
+                    }
+
+                    self.inner.insert(workspace_id, channels);
+                }
+
+                Ok(self.inner.get(&workspace_id).unwrap())
+            }
+        }
+
+        let mut wschannels = WSCache::default();
+
+        let mut spawn_sync = async |integration: &WorkspaceIntegration,
+                                    chat: &Arc<Chat>,
+                                    config: &ChannelConfig|
+               -> Result<SyncMode> {
+            let (info, is_fresh) = if let Some(info) = SyncContext::load_sync_info(
+                &global_services,
+                integration.workspace_id,
+                context.me.id(),
+                &chat.global_id(),
+            )
+            .await?
+            {
+                (info, false)
+            } else {
+                let info = SyncInfo {
+                    telegram_user_id: context.me.id(),
+                    telegram_chat_id: chat.global_id(),
+                    telegram_phone_number: context.me.phone().unwrap().to_string(),
+
+                    huly_workspace_id: integration.workspace_id,
+                    huly_card_id: ksuid::Ksuid::generate().to_base62(),
+                    huly_card_title: chat.card_title(),
+
+                    is_private: matches!(config.access, Access::Private),
+                };
+
+                SyncContext::store_sync_info(&global_services, &info).await?;
+
+                debug!(huly_card_id = %info.huly_card_id,
+                    huly_is_private = %info.is_private,
+                    "Initialize SyncInfo");
+
+                (info, true)
+            };
+
+            let mut context =
+                SyncContext::new(context.clone(), chat.clone(), integration, info).await?;
+
+            let ws_channels = wschannels.get(&context, integration.workspace_id).await?;
+
+            if ws_channels.get(&context.info.huly_card_id).is_none() {
+                // huly channel does not exist
+
+                if !is_fresh {
+                    // reset context (and lazily re-create)
+
+                    let huly_card_id_old = context.info.huly_card_id.clone();
+
+                    SyncContext::cleanup(
+                        &context.worker.global,
+                        context.info.huly_workspace_id,
+                        context.info.telegram_user_id,
+                        &context.info.telegram_chat_id,
+                    )
+                    .await?;
+
+                    context = context.set_huly_card_id(ksuid::Ksuid::generate().to_base62());
+
+                    SyncContext::store_sync_info(&context.worker.global, &context.info).await?;
+
+                    debug!(
+                        huly_card_id_old = huly_card_id_old,
+                        huly_card_id = context.info.huly_card_id,
+                        "Huly channel does not exist, re-creating"
+                    );
+                }
+
+                Exporter::create_card(&context).await?;
+            }
+
+            debug!(huly_card_id = context.info.huly_card_id, "Sync spawned");
+
+            let (sync, handle) = SyncChat::spawn(context).await;
+
+            self.cleanup.lock().await.push(handle);
+            self.syncs.insert(chat.global_id(), Arc::new(sync));
+            sync_active += 1;
+
+            Ok(SyncMode::Sync)
+        };
+
         for chat in &self.all_chats {
             for integration in &self.integrations {
                 let mode = match integration.find_config(chat.id()) {
+                    // sync enabled
                     Some(config) if config.enabled => {
-                        let context = Arc::new(
-                            SyncContext::new(context.clone(), chat.clone(), integration, config)
-                                .await?,
+                        let span = debug_span!("Spawn synchronisation",
+                            huly_workspace = %integration.workspace_id,
+                            huly_account = %context.account_id,
+                            telegram_phone = %context.me.phone().unwrap_or_default(),
+                            telegram_user = %context.me.id(),
+                            telegram_chat = %chat.id(),
+                            telegram_chat_title = %chat.card_title()
                         );
 
-                        let (sync, export) = SyncChat::spawn(context).await;
-
-                        self.cleanup.lock().await.push(export);
-                        self.syncs.insert(chat.global_id(), Arc::new(sync));
-
-                        sync_active += 1;
-
-                        SyncMode::Sync
+                        spawn_sync(integration, chat, config)
+                            .instrument(span)
+                            .await?
                     }
 
+                    // sync disabled
                     Some(_channel) => {
                         sync_disabled += 1;
                         SyncMode::Disabled
                     }
 
+                    // no sync configuration
                     None => {
+                        if SyncContext::cleanup(
+                            global_services,
+                            integration.workspace_id,
+                            context.me.id(),
+                            &chat.global_id(),
+                        )
+                        .await?
+                        {
+                            debug!(workspace = %integration.workspace_id,
+                                telegram_user = %context.me.id(),
+                                telegram_chat = %chat.global_id(),
+                                telegram_chat_title = %chat.card_title(),
+                            "Sync cleanup");
+                        }
+
                         sync_unknown += 1;
                         SyncMode::Unknown
                     }

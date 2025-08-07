@@ -2,6 +2,7 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use chrono::{DateTime, Utc};
+use hulyrs::services::core::WorkspaceUuid;
 use redis::{AsyncCommands, aio::MultiplexedConnection};
 use serde::{Deserialize, Serialize};
 use serde_json as json;
@@ -39,6 +40,14 @@ pub struct SyncState {
     redis: MultiplexedConnection,
 }
 
+fn format_base_prefix(workspace: WorkspaceUuid, user: i64, chat: &String, s: &str) -> String {
+    format!("{}:t{}:{}:{}", workspace, user, chat, s)
+}
+
+fn format_reverse_prefix(workspace: WorkspaceUuid, card: &String, s: &str) -> String {
+    format!("{}:h{}:{}", workspace, card, s)
+}
+
 pub trait KeyPrefixes {
     fn with_base_prefix(&self, s: &str) -> String;
     fn with_reverse_prefix(&self, s: &str) -> String;
@@ -46,23 +55,25 @@ pub trait KeyPrefixes {
 
 impl KeyPrefixes for SyncInfo {
     fn with_base_prefix(&self, s: &str) -> String {
-        format!(
-            "{}:t{}:{}:{}",
-            self.huly_workspace_id, self.telegram_user_id, self.telegram_chat_id, s
+        format_base_prefix(
+            self.huly_workspace_id,
+            self.telegram_user_id,
+            &self.telegram_chat_id,
+            s,
         )
     }
 
     fn with_reverse_prefix(&self, s: &str) -> String {
-        format!("{}:h{}:{}", self.huly_workspace_id, self.huly_card_id, s)
+        format_reverse_prefix(self.huly_workspace_id, &self.huly_card_id, s)
     }
 }
 
 impl SyncState {
-    pub async fn new(info: SyncInfo, context: Arc<GlobalContext>) -> Result<Self> {
-        Ok(Self {
+    pub fn new(info: SyncInfo, context: Arc<GlobalContext>) -> Self {
+        Self {
             redis: context.redis(),
             info,
-        })
+        }
     }
 
     pub async fn set_message(&self, telegram_id: i32, huly_message: HulyMessage) -> Result<()> {
@@ -148,5 +159,32 @@ impl SyncState {
         let key = "blobs";
 
         Ok(redis.hset(key, id, json::to_vec(blob)?).await?)
+    }
+
+    // delete chat related records
+    pub async fn delete(
+        context: &Arc<GlobalContext>,
+        workspace: WorkspaceUuid,
+        user: i64,
+        chat: &String,
+        card: Option<&String>,
+    ) -> Result<()> {
+        let mut redis = context.redis();
+
+        let _: () = redis
+            .del(format_base_prefix(workspace, user, chat, "progress"))
+            .await?;
+
+        let _: () = redis
+            .del(format_base_prefix(workspace, user, chat, "messages"))
+            .await?;
+
+        if let Some(card) = card {
+            let _: () = redis
+                .del(format_reverse_prefix(workspace, card, "messages"))
+                .await?;
+        }
+
+        Ok(())
     }
 }

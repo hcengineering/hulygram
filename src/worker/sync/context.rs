@@ -11,8 +11,8 @@ use serde_json as json;
 use super::state::SyncState;
 use crate::config::CONFIG;
 use crate::config::hulyrs::SERVICES;
-use crate::integration::{Access, ChannelConfig, WorkspaceIntegration};
-use crate::telegram::ChatExt;
+use crate::context::GlobalContext;
+use crate::integration::WorkspaceIntegration;
 use crate::worker::context::WorkerContext;
 use crate::worker::sync::blob::BlobClient;
 
@@ -40,7 +40,6 @@ pub struct SyncContext {
     pub info: SyncInfo,
     pub state: SyncState,
     pub chat: Arc<Chat>,
-    pub is_fresh: bool,
 }
 
 fn sync_key(workspace: WorkspaceUuid, user: i64, chat: &String) -> String {
@@ -52,73 +51,32 @@ fn sync_key_ref(workspace: WorkspaceUuid, card: &String) -> String {
 }
 
 impl SyncContext {
-    pub async fn new(
-        worker: Arc<WorkerContext>,
-        chat: Arc<Chat>,
-        integration: &WorkspaceIntegration,
-        config: &ChannelConfig,
-    ) -> anyhow::Result<Self> {
-        let huly_workspace_id = integration.workspace_id;
-        let transactor = SERVICES.new_transactor_client(
-            integration.endpoint.clone(),
-            &ClaimsBuilder::default()
-                .system_account()
-                .workspace(huly_workspace_id)
-                .extra("service", &CONFIG.service_id)
-                .build()?,
-        )?;
+    pub async fn load_sync_info(
+        global: &Arc<GlobalContext>,
+        workspace: WorkspaceUuid,
+        user: i64,
+        chat: &String,
+    ) -> Result<Option<SyncInfo>> {
+        let key = sync_key(workspace, user, chat);
 
-        let kvs = worker.global.kvs();
-        let key = sync_key(huly_workspace_id, worker.me.id(), &chat.global_id());
-
-        let (info, is_fresh) = match kvs.get(&key).await? {
-            Some(card) => {
-                //
-                (json::from_slice::<SyncInfo>(&card)?, false)
-            }
-            None => {
-                let info = SyncInfo {
-                    telegram_user_id: worker.me.id(),
-                    telegram_chat_id: chat.global_id(),
-                    telegram_phone_number: worker.me.phone().unwrap().to_string(),
-
-                    huly_workspace_id,
-                    huly_card_id: ksuid::Ksuid::generate().to_base62(),
-                    huly_card_title: chat.card_title(),
-
-                    is_private: matches!(config.access, Access::Private),
-                };
-
-                (info, true)
-            }
-        };
-
-        let state = SyncState::new(info.clone(), worker.global.clone()).await?;
-
-        let blobs = BlobClient::new(huly_workspace_id)?;
-
-        Ok(Self {
-            info,
-            transactor,
-            chat,
-            worker,
-            state,
-            blobs,
-            is_fresh,
-        })
+        if let Some(bytes) = global.kvs().get(&key).await? {
+            Ok(Some(json::from_slice::<SyncInfo>(&bytes)?))
+        } else {
+            Ok(None)
+        }
     }
 
-    pub async fn persist_info(&self) -> Result<()> {
-        let kvs = self.worker.global.kvs();
+    pub async fn store_sync_info(global: &Arc<GlobalContext>, info: &SyncInfo) -> Result<()> {
+        let kvs = global.kvs();
 
         let key = sync_key(
-            self.info.huly_workspace_id,
-            self.info.telegram_user_id,
-            &self.info.telegram_chat_id,
+            info.huly_workspace_id,
+            info.telegram_user_id,
+            &info.telegram_chat_id,
         );
-        let ref_key = sync_key_ref(self.info.huly_workspace_id, &self.info.huly_card_id);
+        let ref_key = sync_key_ref(info.huly_workspace_id, &info.huly_card_id);
 
-        kvs.upsert(&key, &json::to_vec(&self.info)?).await?;
+        kvs.upsert(&key, &json::to_vec(&info)?).await?;
         kvs.upsert(&ref_key, &key.as_bytes()).await?;
 
         Ok(())
@@ -145,6 +103,84 @@ impl SyncContext {
             Ok(sync_info)
         } else {
             Ok(None)
+        }
+    }
+
+    pub async fn new(
+        worker: Arc<WorkerContext>,
+        chat: Arc<Chat>,
+        integration: &WorkspaceIntegration,
+        info: SyncInfo,
+    ) -> anyhow::Result<Self> {
+        let huly_workspace_id = integration.workspace_id;
+        let transactor = SERVICES.new_transactor_client(
+            integration.endpoint.clone(),
+            &ClaimsBuilder::default()
+                .system_account()
+                .workspace(huly_workspace_id)
+                .extra("service", &CONFIG.service_id)
+                .build()?,
+        )?;
+
+        let state = SyncState::new(info.clone(), worker.global.clone());
+        let blobs = BlobClient::new(huly_workspace_id)?;
+
+        Ok(Self {
+            info,
+            transactor,
+            chat,
+            worker,
+            state,
+            blobs,
+        })
+    }
+
+    pub fn set_huly_card_id(self, huly_card_id: String) -> Self {
+        let info = SyncInfo {
+            huly_card_id,
+            ..self.info
+        };
+
+        let state = SyncState::new(info.clone(), self.worker.global.clone());
+
+        Self {
+            info,
+            state,
+            ..self
+        }
+    }
+
+    pub async fn cleanup(
+        global: &Arc<GlobalContext>,
+        workspace: WorkspaceUuid,
+        user: i64,
+        chat: &String,
+    ) -> Result<bool> {
+        let kvs = global.kvs();
+
+        let key = sync_key(workspace, user, chat);
+
+        // probably check progress (SyncState)
+        if let Some(bytes) = kvs.get(&key).await? {
+            if let Ok(info) = json::from_slice::<SyncInfo>(&bytes) {
+                let ref_key = sync_key_ref(info.huly_workspace_id, &info.huly_card_id);
+                kvs.delete(&ref_key).await?;
+                kvs.delete(&key).await?;
+
+                SyncState::delete(
+                    global,
+                    info.huly_workspace_id,
+                    user,
+                    chat,
+                    Some(&info.huly_card_id),
+                )
+                .await?;
+            }
+            Ok(true)
+        } else {
+            SyncState::delete(global, workspace, user, chat, None).await?;
+
+            Ok(false)
         }
     }
 

@@ -1,5 +1,3 @@
-use std::collections::HashSet;
-
 use anyhow::{Ok, Result};
 use hulyrs::services::{
     core::{PersonId, PersonUuid},
@@ -12,17 +10,23 @@ use hulyrs::services::{
 use serde_json::{Value, json};
 use tracing::*;
 
+#[derive(serde::Deserialize, Debug)]
+pub struct Channel {
+    #[serde(rename = "_id")]
+    pub id: String,
+    pub space: String,
+    pub title: String,
+}
+
 pub(super) trait TransactorExt {
     #[allow(dead_code)]
-    async fn enumerate_channels(&self) -> Result<HashSet<String>>;
-
-    fn find_channel(&self, channel_id: &str) -> impl Future<Output = Result<bool>>;
+    async fn enumerate_channels(&self) -> Result<Vec<Channel>>;
 
     fn find_person(&self, person: PersonUuid) -> impl Future<Output = Result<Option<PersonId>>>;
 
     fn find_personal_space(
         &self,
-        person: &PersonId,
+        person: PersonUuid,
     ) -> impl Future<Output = Result<Option<String>>>;
 }
 
@@ -31,40 +35,23 @@ fn id(v: Option<Value>) -> Option<String> {
 }
 
 impl TransactorExt for TransactorClient<HttpBackend> {
-    async fn find_channel(&self, channel_id: &str) -> Result<bool> {
-        let query = json!({
-            "_id": channel_id,
-        });
-
-        let options = FindOptionsBuilder::default().project("_id").build()?;
-
-        let is_found = self
-            .find_one::<_, serde_json::Value>("chat:masterTag:Channel", query, &options)
-            .await?
-            .is_some();
-
-        Ok(is_found)
-    }
-
-    async fn enumerate_channels(&self) -> Result<HashSet<String>> {
+    async fn enumerate_channels(&self) -> Result<Vec<Channel>> {
         let query = json!({
             //
         });
 
-        let options = FindOptionsBuilder::default().project("_id").build()?;
+        let options = FindOptionsBuilder::default()
+            .project("_id")
+            .project("space")
+            .project("title")
+            .build()?;
 
-        #[derive(serde::Deserialize)]
-        struct Channel {
-            _id: String,
-        }
-
-        Ok(self
+        let found = self
             .find_all::<_, Channel>("chat:masterTag:Channel", query, &options)
             .await?
-            .value
-            .into_iter()
-            .map(|v| v._id)
-            .collect::<HashSet<_>>())
+            .value;
+
+        Ok(found)
     }
 
     #[instrument(level = "trace", skip(self))]
@@ -85,7 +72,12 @@ impl TransactorExt for TransactorClient<HttpBackend> {
     }
 
     #[instrument(level = "trace", skip(self))]
-    async fn find_personal_space(&self, person_id: &PersonId) -> Result<Option<String>> {
+    async fn find_personal_space(&self, person_id: PersonUuid) -> Result<Option<String>> {
+        let person_id = self
+            .find_person(person_id)
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("NoPerson"))?;
+
         let query = json!({"person": person_id});
 
         let space_id = id(self
