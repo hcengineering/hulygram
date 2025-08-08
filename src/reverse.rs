@@ -45,8 +45,7 @@ pub fn create_consumer(topic: &str) -> Result<StreamConsumer> {
     Ok(consumer)
 }
 
-const TELEGRAM: LazyLock<Value> =
-    LazyLock::new(|| serde_json::to_value(export::HULYGRAM_ORIGIN).unwrap());
+const TELEGRAM: LazyLock<Value> = LazyLock::new(|| serde_json::to_value(export::TELEGRAM).unwrap());
 
 pub fn start(
     supervisor: Arc<super::worker::Supervisor>,
@@ -102,6 +101,7 @@ pub fn start(
 
                     let from_telegram = create_message
                         .extra
+                        .as_ref()
                         .map(|e| e.get(export::HULYGRAM_ORIGIN) == Some(&TELEGRAM))
                         .unwrap_or(false);
 
@@ -127,6 +127,7 @@ pub fn start(
 
                     let from_telegram = patch
                         .extra
+                        .as_ref()
                         .map(|e| e.get(export::HULYGRAM_ORIGIN) == Some(&TELEGRAM))
                         .unwrap_or(false);
 

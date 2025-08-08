@@ -306,7 +306,7 @@ impl SyncChat {
 
     pub async fn handle_reverse_update(
         &self,
-        update: ReverseUpdate,
+        update: &ReverseUpdate,
         telegram_id: Option<i32>,
     ) -> Result<Option<i32>> {
         let chat = self.context.chat.pack();
@@ -324,7 +324,7 @@ impl SyncChat {
                     let message = telegram.send_message(chat, message).await?;
 
                     let huly_message = HulyMessage {
-                        id: huly_message_id,
+                        id: huly_message_id.to_owned(),
                         date: message.last_date(),
                     };
 
@@ -796,7 +796,7 @@ impl Sync {
     pub async fn handle_reverse_update(
         &self,
         sync_info: &SyncInfo,
-        update: ReverseUpdate,
+        update: &ReverseUpdate,
     ) -> Result<()> {
         let mut debouncer = self.debouncer.lock().await;
         let syncs = self.syncs.get_vec(&sync_info.telegram_chat_id);
