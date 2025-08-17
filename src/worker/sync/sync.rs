@@ -2,11 +2,12 @@ use core::panic;
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, atomic::AtomicU32};
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, anyhow};
 use grammers_client::InputMessage;
 use grammers_client::types::Chat;
 use grammers_client::types::Message;
 use hulyrs::services::core::WorkspaceUuid;
+use hulyrs::services::jwt::ClaimsBuilder;
 use multimap::MultiMap;
 use tokio::{
     self,
@@ -27,7 +28,10 @@ use crate::integration::{Access, ChannelConfig, WorkspaceIntegration};
 use crate::telegram::{ChatExt, MessageExt};
 use crate::worker::sync::state::HulyMessage;
 use crate::worker::sync::tx::TransactorExt;
-use crate::{config::CONFIG, integration::TelegramIntegration};
+use crate::{
+    config::{CONFIG, hulyrs::SERVICES},
+    integration::TelegramIntegration,
+};
 
 struct SyncChat {
     sender_realtime: mpsc::Sender<Arc<ImporterEvent>>,
@@ -482,7 +486,16 @@ impl Sync {
                                     chat: &Arc<Chat>,
                                     config: &ChannelConfig|
                -> Result<SyncMode> {
-            let (info, is_fresh) = if let Some(info) = SyncContext::load_sync_info(
+            let transactor = SERVICES.new_transactor_client(
+                integration.endpoint.clone(),
+                &ClaimsBuilder::default()
+                    .system_account()
+                    .workspace(integration.workspace_id)
+                    .extra("service", &CONFIG.service_id)
+                    .build()?,
+            )?;
+
+            let (info, is_fresh) = if let Some(mut info) = SyncContext::load_sync_info(
                 &global_services,
                 integration.workspace_id,
                 context.me.id(),
@@ -490,25 +503,69 @@ impl Sync {
             )
             .await?
             {
+                // temp migration fixture
+                if info.huly_space_id.is_empty() {
+                    let person_space = transactor
+                        .find_personal_space(context.account_id)
+                        .await?
+                        .ok_or_else(|| {
+                            warn!(account_id = %context.account_id, "Personal space not found");
+                            anyhow!("NoPersonalSpace")
+                        })?;
+
+                    info.huly_space_id = config
+                        .space
+                        .as_ref()
+                        .map(|s| s.to_owned())
+                        .unwrap_or_else(|| {
+                            if config.access == Some(Access::Public) {
+                                String::from("card:space:Default")
+                            } else {
+                                person_space
+                            }
+                        });
+
+                    SyncContext::store_sync_info(&global_services, &info).await?;
+                }
+                // end of temp migration fixture
+
                 (info, false)
             } else {
+                let personal_space = transactor
+                    .find_personal_space(context.account_id)
+                    .await?
+                    .ok_or_else(|| {
+                        warn!(account_id = %context.account_id, "Personal space not found");
+                        anyhow!("NoPersonalSpace")
+                    })?;
+
+                let huly_space_id =
+                    config
+                        .space
+                        .as_ref()
+                        .map(|s| s.to_owned())
+                        .unwrap_or_else(|| {
+                            if config.access == Some(Access::Public) {
+                                String::from("card:space:Default")
+                            } else {
+                                personal_space
+                            }
+                        });
+
                 let info = SyncInfo {
                     telegram_user_id: context.me.id(),
                     telegram_chat_id: chat.global_id(),
                     telegram_phone_number: context.me.phone().unwrap().to_string(),
 
                     huly_workspace_id: integration.workspace_id,
+                    huly_space_id,
                     huly_card_id: ksuid::Ksuid::generate().to_base62(),
                     huly_card_title: chat.card_title(),
-
-                    is_private: matches!(config.access, Access::Private),
                 };
 
                 SyncContext::store_sync_info(&global_services, &info).await?;
 
-                debug!(huly_card_id = %info.huly_card_id,
-                    huly_is_private = %info.is_private,
-                    "Initialize SyncInfo");
+                debug!(huly_space_id = %info.huly_space_id, huly_card_id = %info.huly_card_id, "Initialize SyncInfo");
 
                 (info, true)
             };

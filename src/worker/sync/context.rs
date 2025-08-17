@@ -25,10 +25,10 @@ pub struct SyncInfo {
     pub telegram_phone_number: String,
     pub telegram_chat_id: String,
 
+    #[serde(default)]
+    pub huly_space_id: String,
     pub huly_card_id: String,
     pub huly_card_title: String,
-
-    pub is_private: bool,
 }
 
 pub struct SyncContext {

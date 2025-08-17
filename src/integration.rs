@@ -64,7 +64,7 @@ pub struct ChannelMapping {
     pub card_id: String,
 }
 
-#[derive(Serialize, Deserialize, Clone)]
+#[derive(Serialize, Deserialize, Clone, PartialEq)]
 #[serde(rename_all = "lowercase")]
 pub enum Access {
     Public,
@@ -76,7 +76,8 @@ pub enum Access {
 pub struct ChannelConfig {
     pub telegram_id: i64,
     pub enabled: bool,
-    pub access: Access,
+    pub access: Option<Access>,
+    pub space: Option<String>,
 }
 
 impl WorkspaceIntegration {

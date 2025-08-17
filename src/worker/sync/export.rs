@@ -1,6 +1,6 @@
 use std::{collections::HashMap, sync::Arc};
 
-use anyhow::{Context, Result, anyhow};
+use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 use grammers_client::types::{Chat, Media, Message};
 use hulyrs::services::{
@@ -18,7 +18,7 @@ use hulyrs::services::{
 use redis::AsyncCommands;
 use tracing::*;
 
-use super::{context::SyncContext, media::MediaTransfer, tx::TransactorExt};
+use super::{context::SyncContext, media::MediaTransfer};
 use crate::telegram::{EnsurePersonRequestExt, MessageExt};
 use crate::{
     CONFIG,
@@ -53,23 +53,6 @@ impl Exporter {
     pub async fn create_card(context: &SyncContext) -> Result<()> {
         let info = &context.info;
 
-        let space_id = if info.is_private {
-            let account_id = context.worker.account_id;
-            let space_id = context
-                .transactor()
-                .find_personal_space(account_id)
-                .await
-                .context("FindPersonalSpace")?
-                .ok_or_else(|| {
-                    warn!(%account_id, "Personal space not found");
-                    anyhow!("NoPersonSpace")
-                })?;
-
-            space_id
-        } else {
-            "card:space:Default".to_owned()
-        };
-
         let now = chrono::Utc::now();
         let create_channel = CreateDocumentBuilder::default()
             .object_id(&info.huly_card_id)
@@ -78,7 +61,7 @@ impl Exporter {
             .created_on(now)
             .modified_by(&context.worker.social_id)
             .modified_on(now)
-            .object_space(space_id.clone())
+            .object_space(context.info.huly_space_id.clone())
             .attributes(serde_json::json!({
                 "title": &info.huly_card_title,
             }))
@@ -96,7 +79,7 @@ impl Exporter {
             .await
             .context("Transaction")?;
 
-        debug!(space_id, is_private = info.is_private, "Card created");
+        debug!("Card created");
 
         Ok(())
     }
