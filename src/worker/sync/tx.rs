@@ -47,7 +47,7 @@ impl TransactorExt for TransactorClient<HttpBackend> {
             .build()?;
 
         let found = self
-            .find_all::<_, Channel>("chat:masterTag:Channel", query, &options)
+            .find_all::<_, Channel>("chat:masterTag:Thread", query, &options)
             .await?
             .value;
 
