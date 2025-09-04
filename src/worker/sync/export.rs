@@ -56,7 +56,7 @@ impl Exporter {
         let now = chrono::Utc::now();
         let create_channel = CreateDocumentBuilder::default()
             .object_id(&info.huly_card_id)
-            .object_class("chat:masterTag:Channel")
+            .object_class("chat:masterTag:Thread")
             .created_by(&context.worker.social_id)
             .created_on(now)
             .modified_by(&context.worker.social_id)
@@ -151,7 +151,7 @@ impl Exporter {
                 .message_id(&huly_message_id)
                 .message_type(MessageType::Message)
                 .card_id(info.huly_card_id.clone())
-                .card_type("chat:masterTag:Channel")
+                .card_type("chat:masterTag:Thread")
                 .content(message.huly_markdown_text())
                 .social_id(person_id)
                 .date(message.date())
