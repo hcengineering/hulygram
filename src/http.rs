@@ -15,6 +15,7 @@ use hulyrs::services::{
 use serde::{Deserialize, Serialize};
 use tokio::task::JoinHandle;
 use tracing::*;
+use tracing_subscriber::field::debug;
 
 use crate::{
     config::CONFIG,

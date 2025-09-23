@@ -186,9 +186,9 @@ pub struct Worker {
     pub id: WorkerId,
     pub config: Arc<WorkerConfig>,
     pub telegram: TelegramClient,
-    session_key: String,
+    pub session_key: String,
     sync: Sync,
-    global_context: Arc<GlobalContext>,
+    pub global_context: Arc<GlobalContext>,
 }
 
 pub enum ExitReason {
@@ -240,18 +240,6 @@ impl Worker {
             sync,
             global_context,
         })
-    }
-
-    async fn persist_session(&self) -> Result<()> {
-        Ok(self
-            .global_context
-            .kvs()
-            .upsert(&self.session_key, &self.telegram.session().save())
-            .await?)
-    }
-
-    async fn delete_session(&self) -> Result<()> {
-        Ok(self.global_context.kvs().delete(&self.session_key).await?)
     }
 
     fn state_response(&self, state: &WorkerState) -> WorkerStateResponse {

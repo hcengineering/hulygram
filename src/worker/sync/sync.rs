@@ -766,13 +766,15 @@ impl Sync {
     pub async fn handle_update(&mut self, update: grammers_client::types::Update) -> Result<()> {
         use grammers_client::types::Update;
 
+        //   debug!("Got update: {:#?}", update);
+
         let mut debouncer = self.debouncer.lock().await;
 
         fn is_empty(message: &grammers_client::types::update::Message) -> bool {
             use grammers_tl_types::enums::{Message, Update};
             use grammers_tl_types::types::{UpdateEditMessage, UpdateNewMessage};
 
-            matches!(
+            let r = matches!(
                 message.raw,
                 Update::NewMessage(UpdateNewMessage {
                     message: Message::Empty(_),
@@ -781,7 +783,13 @@ impl Sync {
                     message: Message::Empty(_),
                     ..
                 })
-            )
+            );
+
+            if r {
+                debug!("Empty message");
+            }
+
+            r
         }
 
         match update {
@@ -865,12 +873,16 @@ impl Sync {
         {
             let telegram_id = sync.get_t_message(update.huly_message_id()).await?;
 
+            debug!("Reverse update: telegram_id: {:?}", telegram_id);
+
             if telegram_id.is_none()
                 || !debouncer.remove(&(sync_info.telegram_chat_id.clone(), telegram_id.unwrap()))
             {
                 if let Some(id) = sync.handle_reverse_update(update, telegram_id).await? {
                     debouncer.insert((sync_info.telegram_chat_id.clone(), id));
                 }
+            } else {
+                debug!("Reverse update: debounced");
             }
         }
         // probably post to other workspaces
