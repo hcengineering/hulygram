@@ -149,7 +149,7 @@ impl Exporter {
 
             let create_event = CreateMessageEventBuilder::default()
                 .message_id(&huly_message_id)
-                .message_type(MessageType::Message)
+                .message_type(MessageType::Text)
                 .card_id(info.huly_card_id.clone())
                 .card_type("chat:masterTag:Thread")
                 .content(message.huly_markdown_text())

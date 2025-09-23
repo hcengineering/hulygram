@@ -1,6 +1,6 @@
 [package]
 name = "hulygram"
-version = "0.2.9"
+version = "0.2.10"
 edition = "2024"
 rust-version = "1.88.0"
 
@@ -21,12 +21,12 @@ grammers-client = { git = "https://github.com/aav/grammers", features = [
 grammers-mtsender = { git = "https://github.com/aav/grammers" }
 grammers-tl-types = { git = "https://github.com/aav/grammers" }
 
-serde_json = "1.0.140"
-strum = { version = "0.27.1", features = ["derive"] }
 hulyrs = { git = "https://github.com/hcengineering/hulyrs.git", features = [
     "actix",
     "kafka",
-], tag = "hulygram" }
+], branch = "hulygram" }
+serde_json = "1.0.140"
+strum = { version = "0.27.1", features = ["derive"] }
 uuid = { version = "1.16.0", features = ["v4", "v7", "serde", "rng", "std"] }
 url = "2.5.4"
 ksuid = "0.2.0"

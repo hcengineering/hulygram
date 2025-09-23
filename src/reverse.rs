@@ -106,7 +106,7 @@ pub fn start(
                         .unwrap_or(false);
 
                     if !from_telegram
-                        && matches!(create_message.message_type, MessageType::Message)
+                        && matches!(create_message.message_type, MessageType::Text)
                         && let Some((worker, sync_info)) =
                             acquire_worker(&create_message.card_id).await?
                     {
