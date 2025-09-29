@@ -1,12 +1,14 @@
 use std::{sync::Arc, time::Duration};
 
-use anyhow::Result;
+use anyhow::{Result, bail};
+use grammers_client::InvocationError;
 use grammers_client::grammers_tl_types::functions::account::RegisterDevice;
 use grammers_client::{
     Client as TelegramClient, Config, InitParams,
     session::Session,
     types::{LoginToken, PasswordToken, User},
 };
+use grammers_mtsender::AuthorizationError;
 use hulyrs::services::core::WorkspaceUuid;
 use serde::Serialize;
 use tokio::{
@@ -222,24 +224,38 @@ impl Worker {
 
         let sync = Sync::new(global_context.clone());
 
-        let telegram = TelegramClient::connect(Config {
+        let connect = TelegramClient::connect(Config {
             session,
             api_id: CONFIG.telegram_api_id,
             api_hash: CONFIG.telegram_api_hash.clone(),
             params,
         })
-        .await?;
+        .await;
 
-        debug!(%phone, %config.id, "Connected");
+        match connect {
+            Ok(telegram) => {
+                debug!(%phone, %config.id, "Connected");
 
-        Ok(Self {
-            id: config.id.clone(),
-            config,
-            telegram,
-            session_key,
-            sync,
-            global_context,
-        })
+                Ok(Self {
+                    id: config.id.clone(),
+                    config,
+                    telegram,
+                    session_key,
+                    sync,
+                    global_context,
+                })
+            }
+
+            Err(AuthorizationError::Invoke(InvocationError::Rpc(rpc))) if rpc.code == 406 => {
+                debug!(%phone, %config.id, "Duplicated auth key, deleting session");
+                global_context.kvs().delete(&session_key).await?;
+                bail!("AuthKeyDuplicated")
+            }
+
+            Err(err) => {
+                bail!(err)
+            }
+        }
     }
 
     fn state_response(&self, state: &WorkerState) -> WorkerStateResponse {

@@ -46,21 +46,6 @@ impl Worker {
                 }
             }
 
-            Err(error) if error.is_invalid_key() => {
-                self.delete_session().await?;
-                debug!(%self.id, phase="init", %error, "Invalid authorization key, session deleted");
-
-                if self.config.hints.support_auth {
-                    let token = self.telegram.request_login_code(&phone.to_string()).await?;
-
-                    debug!(%self.id, phase="init", "Login code requested");
-
-                    WorkerState::WantCode(token)
-                } else {
-                    bail!(error)
-                }
-            }
-
             Err(error) => {
                 debug!(%self.id, phase="init", %error, "Authorization error");
                 bail!(error)
