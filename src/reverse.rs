@@ -99,7 +99,7 @@ pub fn start(
                     let create_message =
                         json::from_value::<CreateMessageEvent>(event.event.request)?;
 
-                    debug!("CreateMessageEvent: {:#?}", create_message);
+                    //debug!("CreateMessageEvent: {:#?}", create_message);
 
                     let from_telegram = create_message
                         .extra
