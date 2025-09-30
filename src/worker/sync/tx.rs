@@ -4,7 +4,7 @@ use hulyrs::services::{
     transactor::{
         TransactorClient,
         backend::http::HttpBackend,
-        document::{DocumentClient, FindOptionsBuilder},
+        document::{DocumentClient, FindOptions, FindOptionsBuilder},
     },
 };
 use serde_json::{Value, json};
@@ -44,7 +44,7 @@ impl TransactorExt for TransactorClient<HttpBackend> {
             .project("_id")
             .project("space")
             .project("title")
-            .build()?;
+            .build();
 
         let found = self
             .find_all::<_, Channel>("chat:masterTag:Thread", query, &options)
@@ -60,7 +60,7 @@ impl TransactorExt for TransactorClient<HttpBackend> {
               "personUuid": person_uuid
         });
 
-        let options = FindOptionsBuilder::default().project("_id").build()?;
+        let options = FindOptionsBuilder::default().project("_id").build();
 
         let person_id = id(self
             .find_one::<_, serde_json::Value>("contact:class:Person", query, &options)
@@ -84,7 +84,7 @@ impl TransactorExt for TransactorClient<HttpBackend> {
             .find_one::<_, serde_json::Value>(
                 "contact:class:PersonSpace",
                 query,
-                &FindOptionsBuilder::default().build()?,
+                &FindOptions::default(),
             )
             .await?);
 

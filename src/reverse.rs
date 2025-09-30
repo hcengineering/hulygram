@@ -8,8 +8,8 @@ use hulyrs::services::transactor::{
         UpdatePatchEvent,
     },
     kafka::parse_message,
-    tx::TxDomainEvent,
 };
+use hulyrs::services::core::tx::TxDomainEvent;
 use rdkafka::{
     ClientConfig,
     consumer::{Consumer, StreamConsumer},

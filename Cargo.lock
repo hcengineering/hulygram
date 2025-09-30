@@ -1564,7 +1564,7 @@ dependencies = [
 [[package]]
 name = "hulyrs"
 version = "0.1.0"
-source = "git+https://github.com/hcengineering/hulyrs.git?branch=hulygram#ac6f3998f2c7dde7b516c3ae3a35161ddee7923b"
+source = "git+https://github.com/hcengineering/hulyrs.git?branch=undo_find_typing#69a46f2ce9b24f9d4be85c6709fdf10c79ea0390"
 dependencies = [
  "actix-web",
  "bytes",
