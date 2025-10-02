@@ -22,9 +22,10 @@ use tokio::{
 use tracing::*;
 
 use super::supervisor::WorkerId;
-use super::sync::{ReverseUpdate, Sync};
+use super::sync::Sync;
 use crate::config::CONFIG;
 use crate::context::GlobalContext;
+use crate::reverse::ReverseEvent;
 use crate::telegram::{ChatExt, ChatType};
 use crate::worker::sync::{SyncMode, context::SyncInfo};
 
@@ -63,7 +64,7 @@ pub enum WorkerRequest {
 
     //#[allow(dead_code)]
     //RequestUser(Sender<User>),
-    Reverse(SyncInfo, ReverseUpdate),
+    Reverse(SyncInfo, ReverseEvent),
     ProvideCode(
         String,
         Sender<Result<WorkerStateResponse, WorkerRequestError>>,
@@ -429,12 +430,14 @@ impl Worker {
                             }
 
                             (WorkerState::Authorized(_), WorkerRequest::Reverse(sync_info, reverse)) => {
-                                if let Err(error) = self.sync.handle_reverse_update(&sync_info, &reverse).await {
+                                let huly_message = reverse.huly_message_id().clone();
+
+                                if let Err(error) = self.sync.handle_reverse_update(&sync_info, reverse).await {
                                     warn!(
                                         huly_workspace = %sync_info.huly_workspace_id,
                                         huly_card = %sync_info.huly_card_id,
                                         huly_card_title = %sync_info.huly_card_title,
-                                        huly_message = %reverse.huly_message_id(),
+                                        %huly_message,
                                         telegram_phone=%sync_info.telegram_phone_number,
                                         telegram_chat = %sync_info.telegram_chat_id,
                                         %error, "Cannot handle reverse update");

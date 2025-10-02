@@ -18,11 +18,8 @@ use tokio::{
 use tracing::*;
 
 use super::{
-    super::context::WorkerContext,
-    context::SyncContext,
-    context::SyncInfo,
-    export::Exporter,
-    state::{Progress, SyncState},
+    super::context::WorkerContext, context::SyncContext, context::SyncInfo, export::Exporter,
+    state::Progress,
 };
 use crate::integration::{Access, ChannelConfig, WorkspaceIntegration};
 use crate::telegram::{ChatExt, MessageExt};
@@ -33,6 +30,8 @@ use crate::{
     integration::TelegramIntegration,
 };
 
+use crate::reverse::ReverseEvent;
+
 struct SyncChat {
     sender_realtime: mpsc::Sender<Arc<ImporterEvent>>,
     sender_backfill: mpsc::Sender<Arc<ImporterEvent>>,
@@ -40,45 +39,16 @@ struct SyncChat {
     context: Arc<SyncContext>,
 }
 
-#[derive(Debug)]
-pub enum ReverseUpdate {
-    MessageCreated {
-        huly_message_id: String,
-        content: String,
-    },
-
-    MessageUpdated {
-        huly_message_id: String,
-        content: String,
-    },
-
-    MessageDeleted {
-        huly_message_id: String,
-    },
-}
-
-impl ReverseUpdate {
-    pub fn huly_message_id(&self) -> &String {
-        match self {
-            ReverseUpdate::MessageCreated {
-                huly_message_id, ..
-            } => huly_message_id,
-            ReverseUpdate::MessageUpdated {
-                huly_message_id, ..
-            } => huly_message_id,
-
-            ReverseUpdate::MessageDeleted { huly_message_id } => huly_message_id,
-        }
-    }
-}
-
 #[derive(strum::Display)]
 enum ImporterEvent {
     BackfillMessage(Message),
+    BackfillComplete,
+
     NewMessage(Message),
     MessageEdited(Message),
     MessageDeleted(Vec<i32>),
-    BackfillComplete,
+
+    Reverse(ReverseEvent),
 }
 
 impl ImporterEvent {
@@ -89,6 +59,7 @@ impl ImporterEvent {
             ImporterEvent::MessageEdited(message) => message.id(),
             ImporterEvent::MessageDeleted(_) => -1,
             ImporterEvent::BackfillComplete => -1,
+            ImporterEvent::Reverse(_) => -1,
         }
     }
 }
@@ -127,14 +98,18 @@ impl SyncChat {
         mut receiver_realtime: mpsc::Receiver<Arc<ImporterEvent>>,
     ) {
         let mut exporter = Exporter::new(context.clone());
+        let mut debouncer = HashSet::new();
 
         loop {
             #[instrument(level = "debug", skip_all, fields(event_type = %event.to_string(), event_id = %event.id()))]
             async fn process_event(
                 event: Arc<ImporterEvent>,
-                state: &SyncState,
+                context: Arc<SyncContext>,
+                debouncer: &mut HashSet<i32>,
                 exporter: &mut Exporter,
             ) -> Result<()> {
+                let state = &context.state;
+
                 match &*event {
                     ImporterEvent::BackfillMessage(message) => {
                         let telegram_id = message.id();
@@ -183,27 +158,37 @@ impl SyncChat {
                         if !crate::config::CONFIG.dry_run {
                             _ = state.set_progress(Progress::Complete).await;
                         }
+
+                        debug!("BackfillComplete");
                     }
 
                     ImporterEvent::NewMessage(message) => {
                         let telegram_id = message.id();
 
-                        let person_id = exporter.ensure_person(message).await?;
-                        let huly_id = exporter.new_message(&person_id, &message, true).await?;
+                        if state.get_h_message(telegram_id).await?.is_none() {
+                            let person_id = exporter.ensure_person(message).await?;
+                            let huly_id = exporter.new_message(&person_id, &message, true).await?;
 
-                        state.set_message(telegram_id, huly_id).await?;
+                            state.set_message(telegram_id, huly_id.clone()).await?;
+
+                            debug!(%huly_id.id, telegram_message_id=%telegram_id, "NewMessage");
+                        }
                     }
 
                     ImporterEvent::MessageEdited(message) => {
                         let telegram_id = message.id();
 
-                        if let Some(huly_message) = state.get_h_message(message.id()).await? {
-                            let person_id = exporter.ensure_person(message).await?;
+                        if !debouncer.remove(&telegram_id) {
+                            if let Some(huly_message) = state.get_h_message(message.id()).await? {
+                                let person_id = exporter.ensure_person(message).await?;
 
-                            let huly_message =
-                                exporter.edit(&person_id, huly_message, message).await?;
+                                let huly_message =
+                                    exporter.edit(&person_id, huly_message, message).await?;
 
-                            state.set_message(telegram_id, huly_message).await?;
+                                state.set_message(telegram_id, huly_message.clone()).await?;
+
+                                debug!(%huly_message.id, telegram_message_id=%telegram_id, "MessageEdited");
+                            }
                         }
                     }
 
@@ -211,12 +196,59 @@ impl SyncChat {
                         for message in messages {
                             if let Some(huly_message) = state.get_h_message(*message).await? {
                                 exporter.delete(&huly_message.id).await.context("Delete")?;
+
+                                debug!(%huly_message.id, telegram_message_id=%message, "MessageDeleted");
+                            }
+                        }
+                    }
+
+                    ImporterEvent::Reverse(reverse) => {
+                        let huly_message_id = reverse.huly_message_id();
+                        let chat = context.chat.pack();
+
+                        let telegram_id = state.get_t_message(&huly_message_id).await?;
+                        let telegram = &context.worker.telegram;
+
+                        match reverse {
+                            ReverseEvent::MessageCreated(create) => {
+                                if telegram_id.is_none() {
+                                    let message = InputMessage::markdown(&create.content);
+                                    let message = telegram.send_message(chat, message).await?;
+
+                                    let huly_message = HulyMessage {
+                                        id: huly_message_id.clone(),
+                                        date: message.last_date(),
+                                    };
+
+                                    state.set_message(message.id(), huly_message).await?;
+
+                                    debug!(%huly_message_id, telegram_message_id=message.id(), "ReverseUpdate::MessageCreated");
+                                }
+                            }
+                            ReverseEvent::MessageUpdated(update) => {
+                                if let Some(telegram_message_id) = telegram_id {
+                                    if !debouncer.remove(&telegram_message_id) {
+                                        let message = InputMessage::markdown(&update.content);
+
+                                        telegram
+                                            .edit_message(chat, telegram_message_id, message)
+                                            .await?;
+
+                                        debouncer.insert(telegram_message_id);
+
+                                        debug!(%huly_message_id, telegram_message_id=telegram_id, "ReverseUpdate::MessageUpdated");
+                                    }
+                                }
+                            }
+                            ReverseEvent::MessageDeleted(_) => {
+                                if let Some(telegram_id) = telegram_id {
+                                    telegram.delete_messages(chat, &[telegram_id]).await?;
+                                    debug!(%huly_message_id, telegram_message_id=telegram_id, "ReverseUpdate::MessageDeleted",);
+                                }
                             }
                         }
                     }
                 }
-
-                debug!("Processed");
 
                 Ok(())
             }
@@ -238,7 +270,9 @@ impl SyncChat {
             };
 
             if let Some(event) = event {
-                if let Err(error) = process_event(event, &context.state, &mut exporter).await {
+                if let Err(error) =
+                    process_event(event, context.clone(), &mut debouncer, &mut exporter).await
+                {
                     error!(?error, "Process event");
                 }
             } else {
@@ -303,71 +337,6 @@ impl SyncChat {
 
         debug!("Backfill complete");
     }
-
-    pub async fn get_t_message(&self, huly_message_id: &String) -> Result<Option<i32>> {
-        self.context.state.get_t_message(huly_message_id).await
-    }
-
-    pub async fn handle_reverse_update(
-        &self,
-        update: &ReverseUpdate,
-        telegram_id: Option<i32>,
-    ) -> Result<Option<i32>> {
-        let chat = self.context.chat.pack();
-        let telegram = &self.context.worker.telegram;
-
-        let message_id = match update {
-            ReverseUpdate::MessageCreated {
-                content,
-                huly_message_id,
-                ..
-            } => {
-                if telegram_id.is_none() {
-                    let message = InputMessage::markdown(&content);
-
-                    let message = telegram.send_message(chat, message).await?;
-
-                    let huly_message = HulyMessage {
-                        id: huly_message_id.to_owned(),
-                        date: message.last_date(),
-                    };
-
-                    self.context
-                        .state
-                        .set_message(message.id(), huly_message)
-                        .await?;
-
-                    None
-                } else {
-                    None
-                }
-            }
-
-            ReverseUpdate::MessageUpdated { content, .. } => {
-                if let Some(telegram_message_id) = telegram_id {
-                    let message = InputMessage::markdown(&content);
-
-                    telegram
-                        .edit_message(chat, telegram_message_id, message)
-                        .await?;
-                }
-
-                telegram_id
-            }
-
-            ReverseUpdate::MessageDeleted { .. } => {
-                if let Some(telegram_message_id) = telegram_id {
-                    telegram
-                        .delete_messages(chat, &[telegram_message_id])
-                        .await?;
-                }
-
-                None
-            }
-        };
-
-        Ok(message_id)
-    }
 }
 
 #[derive(Clone, Copy, serde::Serialize, Debug)]
@@ -388,7 +357,6 @@ pub struct Sync {
     integrations: Vec<WorkspaceIntegration>,
     cleanup: Arc<Mutex<Vec<JoinHandle<()>>>>,
     context: Arc<GlobalContext>,
-    debouncer: Mutex<HashSet<(String, i32)>>,
 }
 
 impl Sync {
@@ -400,7 +368,6 @@ impl Sync {
             all_chats: Vec::default(),
             integrations: Vec::default(),
             cleanup: Arc::default(),
-            debouncer: Mutex::default(),
         }
     }
 
@@ -766,10 +733,6 @@ impl Sync {
     pub async fn handle_update(&mut self, update: grammers_client::types::Update) -> Result<()> {
         use grammers_client::types::Update;
 
-        //   debug!("Got update: {:#?}", update);
-
-        let mut debouncer = self.debouncer.lock().await;
-
         fn is_empty(message: &grammers_client::types::update::Message) -> bool {
             use grammers_tl_types::enums::{Message, Update};
             use grammers_tl_types::types::{UpdateEditMessage, UpdateNewMessage};
@@ -809,17 +772,13 @@ impl Sync {
             Update::MessageEdited(message) => {
                 let chat_id = message.chat().global_id();
 
-                if !debouncer.remove(&(chat_id.clone(), message.id())) {
-                    if let Some(syncs) = self.syncs.get_vec_mut(&chat_id) {
-                        for sync in syncs {
-                            let _ = sync
-                                .sender_realtime
-                                .send(Arc::new(ImporterEvent::MessageEdited((*message).clone())))
-                                .await;
-                        }
+                if let Some(syncs) = self.syncs.get_vec_mut(&chat_id) {
+                    for sync in syncs {
+                        let _ = sync
+                            .sender_realtime
+                            .send(Arc::new(ImporterEvent::MessageEdited((*message).clone())))
+                            .await;
                     }
-
-                    debouncer.insert((chat_id.clone(), message.id()));
                 }
             }
 
@@ -861,9 +820,8 @@ impl Sync {
     pub async fn handle_reverse_update(
         &self,
         sync_info: &SyncInfo,
-        update: &ReverseUpdate,
+        update: ReverseEvent,
     ) -> Result<()> {
-        let mut debouncer = self.debouncer.lock().await;
         let syncs = self.syncs.get_vec(&sync_info.telegram_chat_id);
 
         if let Some(syncs) = syncs
@@ -871,19 +829,9 @@ impl Sync {
                 .iter()
                 .find(|sync| sync.context.info.huly_workspace_id == sync_info.huly_workspace_id)
         {
-            let telegram_id = sync.get_t_message(update.huly_message_id()).await?;
-
-            debug!("Reverse update: telegram_id: {:?}", telegram_id);
-
-            if telegram_id.is_none()
-                || !debouncer.remove(&(sync_info.telegram_chat_id.clone(), telegram_id.unwrap()))
-            {
-                if let Some(id) = sync.handle_reverse_update(update, telegram_id).await? {
-                    debouncer.insert((sync_info.telegram_chat_id.clone(), id));
-                }
-            } else {
-                debug!("Reverse update: debounced");
-            }
+            sync.sender_realtime
+                .send(Arc::new(ImporterEvent::Reverse(update)))
+                .await?;
         }
         // probably post to other workspaces
 

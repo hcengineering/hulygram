@@ -25,7 +25,7 @@ use crate::{
     context::GlobalContext,
     worker::{
         SyncContext, WorkerHintsBuilder, WorkerRequest,
-        sync::{ReverseUpdate, SyncInfo, export},
+        sync::{SyncInfo, export},
     },
 };
 
@@ -48,6 +48,23 @@ pub fn create_consumer(topic: &str) -> Result<StreamConsumer> {
 }
 
 const TELEGRAM: LazyLock<Value> = LazyLock::new(|| serde_json::to_value(export::TELEGRAM).unwrap());
+
+#[derive(Debug)]
+pub enum ReverseEvent {
+    MessageCreated(CreateMessageEvent),
+    MessageUpdated(UpdatePatchEvent),
+    MessageDeleted(RemovePatchEvent),
+}
+
+impl ReverseEvent {
+    pub fn huly_message_id(&self) -> String {
+        match self {
+            ReverseEvent::MessageCreated(create) => create.message_id.as_ref().unwrap().to_owned(),
+            ReverseEvent::MessageUpdated(patch) => patch.message_id.to_owned(),
+            ReverseEvent::MessageDeleted(patch) => patch.message_id.to_owned(),
+        }
+    }
+}
 
 pub fn start(
     supervisor: Arc<super::worker::Supervisor>,
@@ -117,10 +134,7 @@ pub fn start(
                         worker
                             .send(WorkerRequest::Reverse(
                                 sync_info,
-                                ReverseUpdate::MessageCreated {
-                                    huly_message_id: create_message.message_id.unwrap(),
-                                    content: create_message.content,
-                                },
+                                ReverseEvent::MessageCreated(create_message),
                             ))
                             .await?;
                     }
@@ -141,10 +155,7 @@ pub fn start(
                         worker
                             .send(WorkerRequest::Reverse(
                                 sync_info,
-                                ReverseUpdate::MessageUpdated {
-                                    huly_message_id: patch.message_id,
-                                    content: patch.content,
-                                },
+                                ReverseEvent::MessageUpdated(patch),
                             ))
                             .await?;
                     }
@@ -157,9 +168,7 @@ pub fn start(
                         worker
                             .send(WorkerRequest::Reverse(
                                 sync_info,
-                                ReverseUpdate::MessageDeleted {
-                                    huly_message_id: patch.message_id,
-                                },
+                                ReverseEvent::MessageDeleted(patch),
                             ))
                             .await?;
                     }
