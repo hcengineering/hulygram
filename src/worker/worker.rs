@@ -1,14 +1,12 @@
 use std::{sync::Arc, time::Duration};
 
 use anyhow::{Result, bail};
-use grammers_client::InvocationError;
 use grammers_client::grammers_tl_types::functions::account::RegisterDevice;
 use grammers_client::{
     Client as TelegramClient, Config, InitParams,
     session::Session,
     types::{LoginToken, PasswordToken, User},
 };
-use grammers_mtsender::AuthorizationError;
 use hulyrs::services::core::WorkspaceUuid;
 use serde::Serialize;
 use tokio::{
@@ -186,12 +184,9 @@ pub(super) enum WorkerState {
 }
 
 pub struct Worker {
-    pub id: WorkerId,
-    pub config: Arc<WorkerConfig>,
-    pub telegram: TelegramClient,
-    pub session_key: String,
-    sync: Sync,
+    pub config: WorkerConfig,
     pub global_context: Arc<GlobalContext>,
+    pub session_key: String,
 }
 
 pub enum ExitReason {
@@ -202,61 +197,66 @@ pub enum ExitReason {
     Error(anyhow::Error),
 }
 
-impl Worker {
-    pub async fn new(global_context: Arc<GlobalContext>, config: WorkerConfig) -> Result<Self> {
-        let config = Arc::new(config);
+async fn connect(
+    telegram_config: Config,
+    config: &WorkerConfig,
+    generation: u32,
+) -> Result<(TelegramClient, WorkerState)> {
+    let connect = TelegramClient::connect(telegram_config).await;
 
-        let phone = &config.phone;
-        let params: InitParams = InitParams {
-            catch_up: true,
-            update_queue_limit: None,
-            ..Default::default()
-        };
+    match connect {
+        Ok(telegram) => {
+            let state = telegram.is_authorized().await;
 
-        let session_key = format!("ses_{}", phone);
+            match state {
+                Ok(true) => {
+                    trace!(%config.id, phase="init", "Authorization successfull");
 
-        let session = if let Some(session) = global_context.kvs().get(&session_key).await? {
-            trace!(%phone, "Persisted session found");
-            Session::load(session.as_slice())?
-        } else {
-            trace!(%phone, "Persisted session not found");
-            Session::new()
-        };
+                    let me = telegram.get_me().await?;
 
-        let sync = Sync::new(global_context.clone());
+                    Ok((telegram, WorkerState::Authorized(me)))
+                }
 
-        let connect = TelegramClient::connect(Config {
-            session,
-            api_id: CONFIG.telegram_api_id,
-            api_hash: CONFIG.telegram_api_hash.clone(),
-            params,
-        })
-        .await;
+                Ok(false) => {
+                    debug!(%config.id, phase="init", support_auth=config.hints.support_auth, "Not authorized");
 
-        match connect {
-            Ok(telegram) => {
-                debug!(%phone, %config.id, "Connected");
+                    if config.hints.support_auth && generation == 0 {
+                        let token = telegram
+                            .request_login_code(&config.phone.to_string())
+                            .await?;
 
-                Ok(Self {
-                    id: config.id.clone(),
-                    config,
-                    telegram,
-                    session_key,
-                    sync,
-                    global_context,
-                })
-            }
+                        debug!(%config.id, phase="init", "Login code requested");
 
-            Err(AuthorizationError::Invoke(InvocationError::Rpc(rpc))) if rpc.code == 406 => {
-                debug!(%phone, %config.id, "Duplicated auth key, deleting session");
-                global_context.kvs().delete(&session_key).await?;
-                bail!("AuthKeyDuplicated")
-            }
+                        Ok((telegram, WorkerState::WantCode(token)))
+                    } else {
+                        debug!(%config.id, phase="init", "Authorization not supported, exiting");
+                        bail!("NotAuthorized");
+                    }
+                }
 
-            Err(err) => {
-                bail!(err)
+                Err(error) => {
+                    debug!(%config.id, phase="init", %error, "Authorization error");
+                    bail!(error)
+                }
             }
         }
+
+        Err(error) => {
+            error!(%config.phone, %error, "Cannot connect to Telegram");
+            bail!(error)
+        }
+    }
+}
+
+impl Worker {
+    pub async fn new(global_context: Arc<GlobalContext>, config: WorkerConfig) -> Result<Self> {
+        let session_key = format!("ses_{}", config.phone);
+
+        Ok(Self {
+            config,
+            session_key,
+            global_context,
+        })
     }
 
     fn state_response(&self, state: &WorkerState) -> WorkerStateResponse {
@@ -267,29 +267,72 @@ impl Worker {
         }
     }
 
-    pub async fn run(mut self, inbox: &mut mpsc::Receiver<WorkerRequest>) -> ExitReason {
-        let result = self.run0(inbox).await;
-
-        if self.telegram.is_authorized().await.unwrap_or(false) {
-            let _ = self.persist_session().await;
-        }
-
-        self.sync.abort().await;
-
-        result.unwrap_or_else(ExitReason::Error)
-    }
-
-    #[instrument(name = "run", level = "trace", skip_all)]
-    pub async fn run0(&mut self, inbox: &mut mpsc::Receiver<WorkerRequest>) -> Result<ExitReason> {
+    pub async fn run(
+        mut self,
+        inbox: &mut mpsc::Receiver<WorkerRequest>,
+        generation: u32,
+    ) -> ExitReason {
         let phone = &self.config.phone;
+        let config = &self.config;
 
-        let mut state = match self.auth_init().await {
-            Ok(state) => state,
+        let session_key = &self.session_key;
+        let global_context = &self.global_context;
+
+        let (session, loaded) = if let Some(session) = global_context
+            .kvs()
+            .get(session_key)
+            .await
+            .expect("KVS get failed")
+        {
+            debug!(%phone, "Persisted session found");
+
+            Session::load(session.as_slice())
+                .map(|session| (session, true))
+                .unwrap_or_else(|_| {
+                    warn!(%phone, "Cannot load persisted session, starting new");
+                    (Session::new(), false)
+                })
+        } else {
+            debug!(%phone, "Persisted session not found");
+            (Session::new(), false)
+        };
+
+        let telegram_config = Config {
+            session,
+            api_id: CONFIG.telegram_api_id,
+            api_hash: CONFIG.telegram_api_hash.clone(),
+            params: InitParams {
+                catch_up: true,
+                update_queue_limit: None,
+                ..Default::default()
+            },
+        };
+
+        let connect = connect(telegram_config, config, generation).await;
+
+        match connect {
+            Ok((telegram, state)) => {
+                let mut sync = Sync::new(global_context.clone());
+
+                let result = self.run0(inbox, telegram.clone(), state, &mut sync).await;
+
+                if telegram.is_authorized().await.unwrap_or(false) {
+                    let _ = self.persist_session(&telegram).await;
+                }
+
+                sync.abort().await;
+
+                result.unwrap_or_else(ExitReason::Error)
+            }
+
             Err(error) => {
-                error!(%phone, %error, "Authorization failed");
+                error!(%phone, %error, "Cannot connect to Telegram");
 
-                // receieve request for a while, and respond with unauthorized
-                // this will provide http client with proper error
+                if loaded {
+                    debug!(%phone, "Deleting invalid session");
+                    let _ = global_context.kvs().delete(session_key).await;
+                }
+
                 while let Ok(Some(request)) =
                     time::timeout(Duration::from_millis(500), inbox.recv()).await
                 {
@@ -310,9 +353,20 @@ impl Worker {
                     }
                 }
 
-                return Ok(ExitReason::NotAuthorized);
+                ExitReason::NotAuthorized
             }
-        };
+        }
+    }
+
+    #[instrument(name = "run", level = "trace", skip_all)]
+    pub async fn run0(
+        &mut self,
+        inbox: &mut mpsc::Receiver<WorkerRequest>,
+        telegram: TelegramClient,
+        mut state: WorkerState,
+        sync: &mut Sync,
+    ) -> Result<ExitReason> {
+        let phone = &self.config.phone;
 
         let mut startup_complete = false;
         let mut persist_session = time::interval(Duration::from_secs(60));
@@ -323,7 +377,7 @@ impl Worker {
             if matches!(state, WorkerState::Authorized(_)) && !startup_complete {
                 trace!("Startup Begin");
 
-                self.sync.spawn(self.telegram.clone()).await?;
+                sync.spawn(telegram.clone()).await?;
 
                 let token = CONFIG.base_url.join("/push/")?.join(phone)?.to_string();
 
@@ -336,7 +390,7 @@ impl Worker {
                     other_uids: vec![],
                 };
 
-                match self.telegram.invoke(&register).await {
+                match telegram.invoke(&register).await {
                     Ok(true) => {
                         debug!(%phone, endpoint=%register.token, "Push endpoint registered");
                     }
@@ -349,7 +403,7 @@ impl Worker {
                     }
                 }
 
-                self.persist_session().await?;
+                self.persist_session(&telegram).await?;
 
                 startup_complete = true;
 
@@ -359,7 +413,7 @@ impl Worker {
             select! {
                 _ = persist_session.tick() => {
                     if matches!(state, WorkerState::Authorized(_)) {
-                        self.persist_session().await?;
+                        self.persist_session(&telegram).await?;
                     }
                 }
 
@@ -382,7 +436,7 @@ impl Worker {
 
                                 let mut result = Vec::default();
 
-                                for (chat, mode) in self.sync.chats(requested_workspace_id) {
+                                for (chat, mode) in sync.chats(requested_workspace_id) {
                                         result.push(ChatEntry {
                                             id: chat.id().to_string(),
                                             name: chat.card_title(),
@@ -396,14 +450,14 @@ impl Worker {
                             }
 
                             (WorkerState::WantCode(token), WorkerRequest::ProvideCode(code, response)) => {
-                                state = self.auth_code(token, &code).await?;
+                                state = self.auth_code(&telegram, token, &code).await?;
 
                                 #[allow(unused)]
                                 response.send(Ok(self.state_response(&state)));
                             }
 
                             (WorkerState::WantPassword(_, token), WorkerRequest::ProvidePassword(password, response)) => {
-                                state = self.auth_password(token, &password).await?;
+                                state = self.auth_password(&telegram, token, &password).await?;
 
                                 #[allow(unused)]
                                 response.send(Ok(self.state_response(&state)));
@@ -418,7 +472,7 @@ impl Worker {
                             (_, WorkerRequest::Shutdown(true)) => {
                                 debug!(%phone, "Sign out requested");
 
-                                self.telegram.sign_out().await?;
+                                telegram.sign_out().await?;
                                 self.delete_session().await?;
 
                                 break Ok(ExitReason::Shutdown);
@@ -432,7 +486,7 @@ impl Worker {
                             (WorkerState::Authorized(_), WorkerRequest::Reverse(sync_info, reverse)) => {
                                 let huly_message = reverse.huly_message_id().clone();
 
-                                if let Err(error) = self.sync.handle_reverse_update(&sync_info, reverse).await {
+                                if let Err(error) = sync.handle_reverse_update(&sync_info, reverse).await {
                                     warn!(
                                         huly_workspace = %sync_info.huly_workspace_id,
                                         huly_card = %sync_info.huly_card_id,
@@ -453,10 +507,10 @@ impl Worker {
                     }
                 }
 
-                update = self.telegram.next_update() => {
+                update = telegram.next_update() => {
                     match update {
                         Ok(update) => {
-                            self.sync.handle_update(update).await?;
+                            sync.handle_update(update).await?;
                         }
 
                         Err(error) => {

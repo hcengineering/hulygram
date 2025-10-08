@@ -276,7 +276,8 @@ impl SyncChat {
                     error!(?error, "Process event");
                 }
             } else {
-                panic!("Receivers closed")
+                debug!("Exporter task exiting, receivers closed, terminating sync loop");
+                break;
             }
         }
     }

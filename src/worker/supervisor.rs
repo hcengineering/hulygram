@@ -93,6 +93,7 @@ impl SupervisorInner {
             trace!(%id, "Spawn worker");
             let task_name = format!("worker-{}", id);
             let global = self.global.clone();
+            let mut generation = 0;
 
             let task = async move {
                 loop {
@@ -102,7 +103,8 @@ impl SupervisorInner {
 
                     let delay = match Worker::new(global.clone(), config.clone()).await {
                         Ok(worker) => {
-                            let reason = worker.run(&mut receiver).await;
+                            let reason = worker.run(&mut receiver, generation).await;
+                            generation += 1;
 
                             match reason {
                                 ExitReason::Shutdown => {
