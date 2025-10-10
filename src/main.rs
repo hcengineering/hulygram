@@ -3,6 +3,7 @@ use std::sync::Arc;
 #[allow(unused_imports)]
 use console_subscriber::ConsoleLayer;
 use hulyrs::services::jwt::ClaimsBuilder;
+use hulyrs::services::otel;
 use tokio::{
     select,
     signal::unix::{SignalKind, signal},
@@ -23,37 +24,54 @@ use tikv_jemallocator::Jemalloc;
 use config::CONFIG;
 
 pub fn initialize_tracing() {
+    use opentelemetry::trace::TracerProvider;
+    use opentelemetry_appender_tracing::layer::OpenTelemetryTracingBridge;
+    use tracing::Level;
+    use tracing_opentelemetry::OpenTelemetryLayer;
     use tracing_subscriber::{filter::targets::Targets, prelude::*};
 
-    /*
-    let tokio_console = {
-        ConsoleLayer::builder()
-            .retention(Duration::from_secs(30))
-            .spawn()
-    };*/
-
-    let stdout_logger = {
-        let level = config::hulyrs::CONFIG.log;
-
-        let filter = Targets::default()
-            .with_default(tracing::Level::WARN)
-            .with_target(env!("CARGO_PKG_NAME"), level)
-            .with_target("grammers", tracing::Level::INFO)
-            //.with_target("tokio", tracing::Level::TRACE)
-            //.with_target("runtime", tracing::Level::TRACE)
-            .with_target("hulyrs::service", config::hulyrs::CONFIG.log);
-        //.with_target("actix", tracing::Level::DEBUG)
-        //.with_target("reqwest", tracing::Level::TRACE)
-
-        tracing_subscriber::fmt::layer()
-            .compact()
-            .with_filter(filter)
+    let otel_config = otel::OtelConfig {
+        mode: config::hulyrs::CONFIG.otel_mode.clone(),
+        service_name: env!("CARGO_PKG_NAME").to_string(),
+        service_version: env!("CARGO_PKG_VERSION").to_string(),
     };
 
-    tracing_subscriber::registry()
-        //.with(tokio_console)
-        .with(stdout_logger)
-        .init();
+    otel::init(&otel_config);
+
+    let filter = Targets::default()
+        .with_target(env!("CARGO_BIN_NAME"), config::hulyrs::CONFIG.log)
+        .with_target("actix", Level::WARN);
+    let format = tracing_subscriber::fmt::layer().compact();
+
+    match &config::hulyrs::CONFIG.otel_mode {
+        otel::OtelMode::Off => {
+            tracing_subscriber::registry()
+                .with(filter)
+                .with(format)
+                .init();
+        }
+
+        _ => {
+            tracing_subscriber::registry()
+                .with(filter)
+                .with(format)
+                .with(otel::tracer_provider(&otel_config).map(|provider| {
+                    let filter = Targets::default()
+                        .with_default(Level::DEBUG)
+                        .with_target(env!("CARGO_PKG_NAME"), config::hulyrs::CONFIG.log);
+
+                    OpenTelemetryLayer::new(provider.tracer("hulylake")).with_filter(filter)
+                }))
+                .with(otel::logger_provider(&otel_config).as_ref().map(|logger| {
+                    let filter = Targets::default()
+                        .with_default(Level::DEBUG)
+                        .with_target(env!("CARGO_PKG_NAME"), Level::DEBUG);
+
+                    OpenTelemetryTracingBridge::new(logger).with_filter(filter)
+                }))
+                .init();
+        }
+    }
 }
 
 #[global_allocator]
