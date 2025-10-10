@@ -72,6 +72,12 @@ pub fn initialize_tracing() {
                 .init();
         }
     }
+
+    info!(
+        otel = ?config::hulyrs::CONFIG.otel_mode,
+        log = ?config::hulyrs::CONFIG.log,
+        "tracing with initialized"
+    );
 }
 
 #[global_allocator]
