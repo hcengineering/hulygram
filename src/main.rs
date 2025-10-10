@@ -60,7 +60,7 @@ pub fn initialize_tracing() {
                         .with_default(Level::DEBUG)
                         .with_target(env!("CARGO_PKG_NAME"), config::hulyrs::CONFIG.log);
 
-                    OpenTelemetryLayer::new(provider.tracer("hulylake")).with_filter(filter)
+                    OpenTelemetryLayer::new(provider.tracer("hulygram")).with_filter(filter)
                 }))
                 .with(otel::logger_provider(&otel_config).as_ref().map(|logger| {
                     let filter = Targets::default()
