@@ -6,7 +6,6 @@ WORKDIR /tmp/build
 COPY . .
 
 ENV RUSTFLAGS="--cfg tokio_unstable"
-RUN cargo update hulyrs
 RUN \
     if [ "$TARGETPLATFORM" = "linux/amd64" ]; then \
         apt-get update && apt-get install -y cmake \

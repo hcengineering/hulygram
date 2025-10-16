@@ -1517,7 +1517,7 @@ checksum = "df3b46402a9d5adb4c86a0cf463f42e19994e3ee891101b1841f30a545cb49a9"
 
 [[package]]
 name = "hulygram"
-version = "0.2.18"
+version = "0.2.19"
 dependencies = [
  "actix-cors",
  "actix-web",
@@ -1567,7 +1567,7 @@ dependencies = [
 [[package]]
 name = "hulyrs"
 version = "0.1.0"
-source = "git+https://github.com/hcengineering/hulyrs.git?branch=hulygram#28f7bbadf2a34fa84448f17ac8ec9401a9f2a703"
+source = "git+https://github.com/hcengineering/hulyrs.git?branch=hulygram#15fedca5f0522dbf6015ed87c1dce7d503e7fb46"
 dependencies = [
  "actix-web",
  "bytes",
