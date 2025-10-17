@@ -228,7 +228,7 @@ impl SyncChat {
                             let mut context = HashMap::new();
                             context.insert("content", Formattable::display(&content));
 
-                            if let Some((first_name, last_name)) = &name {
+                            if let Some((last_name, first_name)) = &name {
                                 context.insert("first_name", Formattable::display(first_name));
                                 context.insert("last_name", Formattable::display(last_name));
                             }
