@@ -1,13 +1,13 @@
-use core::panic;
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, atomic::AtomicU32};
 
 use anyhow::{Context, Result, anyhow};
 use grammers_client::InputMessage;
-use grammers_client::types::Chat;
 use grammers_client::types::Message;
-use hulyrs::services::core::WorkspaceUuid;
+use grammers_client::types::{Chat, PackedChat};
+use hulyrs::services::core::{SocialIdId, WorkspaceUuid};
 use hulyrs::services::jwt::ClaimsBuilder;
+use interpolator::Formattable;
 use multimap::MultiMap;
 use tokio::{
     self,
@@ -209,10 +209,52 @@ impl SyncChat {
                         let telegram_id = state.get_t_message(&huly_message_id).await?;
                         let telegram = &context.worker.telegram;
 
+                        async fn prepare_message(
+                            chat: PackedChat,
+                            content: &str,
+                            transactor: &impl TransactorExt,
+                            social_id: &SocialIdId,
+                        ) -> Result<InputMessage> {
+                            let name = transactor.lookup_person_name(social_id).await?;
+
+                            let default_template = "{content}".to_string();
+                            let template = match CONFIG.message_tearline.as_ref() {
+                                Some(template) if chat.is_channel() => {
+                                    format!("{content}\n\n{}", template)
+                                }
+                                _ => default_template.clone(),
+                            };
+
+                            let mut context = HashMap::new();
+                            context.insert("content", Formattable::display(&content));
+
+                            if let Some((first_name, last_name)) = &name {
+                                context.insert("first_name", Formattable::display(first_name));
+                                context.insert("last_name", Formattable::display(last_name));
+                            }
+
+                            use interpolator::format;
+
+                            let content = format(&template, &context).unwrap_or_else(|error| {
+                                warn!(%error, template, "Failed to format message template");
+                                format(&default_template, &context)
+                                    .expect("Failed to format default template")
+                            });
+
+                            Ok(InputMessage::markdown(&content))
+                        }
+
                         match reverse {
                             ReverseEvent::MessageCreated(create) => {
                                 if telegram_id.is_none() {
-                                    let message = InputMessage::markdown(&create.content);
+                                    let message = prepare_message(
+                                        chat,
+                                        &create.content,
+                                        &context.transactor,
+                                        &create.social_id,
+                                    )
+                                    .await?;
+
                                     let message = telegram.send_message(chat, message).await?;
 
                                     let huly_message = HulyMessage {
@@ -228,15 +270,27 @@ impl SyncChat {
                             ReverseEvent::MessageUpdated(update) => {
                                 if let Some(telegram_message_id) = telegram_id {
                                     if !debouncer.remove(&telegram_message_id) {
-                                        let message = InputMessage::markdown(&update.content);
-
-                                        telegram
-                                            .edit_message(chat, telegram_message_id, message)
+                                        let messages = telegram
+                                            .get_messages_by_id(chat, &[telegram_message_id])
                                             .await?;
 
-                                        debouncer.insert(telegram_message_id);
+                                        if let [Some(_)] = messages.as_slice() {
+                                            let message = prepare_message(
+                                                chat,
+                                                &update.content,
+                                                &context.transactor,
+                                                &update.social_id,
+                                            )
+                                            .await?;
 
-                                        debug!(%huly_message_id, telegram_message_id=telegram_id, "ReverseUpdate::MessageUpdated");
+                                            telegram
+                                                .edit_message(chat, telegram_message_id, message)
+                                                .await?;
+
+                                            debouncer.insert(telegram_message_id);
+
+                                            debug!(%huly_message_id, telegram_message_id=telegram_id, "ReverseUpdate::MessageUpdated");
+                                        }
                                     }
                                 }
                             }

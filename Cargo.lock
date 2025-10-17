@@ -1517,7 +1517,7 @@ checksum = "df3b46402a9d5adb4c86a0cf463f42e19994e3ee891101b1841f30a545cb49a9"
 
 [[package]]
 name = "hulygram"
-version = "0.2.19"
+version = "0.2.20"
 dependencies = [
  "actix-cors",
  "actix-web",
@@ -1537,6 +1537,7 @@ dependencies = [
  "grammers-tl-types",
  "hulyrs",
  "imageinfo",
+ "interpolator",
  "jemalloc_pprof",
  "ksuid",
  "multimap",
@@ -1567,7 +1568,7 @@ dependencies = [
 [[package]]
 name = "hulyrs"
 version = "0.1.0"
-source = "git+https://github.com/hcengineering/hulyrs.git?branch=hulygram#15fedca5f0522dbf6015ed87c1dce7d503e7fb46"
+source = "git+https://github.com/hcengineering/hulyrs.git?branch=hulygram#415b309e1639b4a7b30759b0bf0fc434b1ecaaaf"
 dependencies = [
  "actix-web",
  "bytes",
@@ -1881,6 +1882,12 @@ dependencies = [
  "wasm-bindgen",
  "web-sys",
 ]
+
+[[package]]
+name = "interpolator"
+version = "0.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "71dd52191aae121e8611f1e8dc3e324dd0dd1dee1e6dd91d10ee07a3cfb4d9d8"
 
 [[package]]
 name = "io-uring"
@@ -3122,13 +3129,13 @@ dependencies = [
 
 [[package]]
 name = "regex"
-version = "1.11.1"
+version = "1.12.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b544ef1b4eac5dc2db33ea63606ae9ffcfac26c1416a2806ae0bf5f56b201191"
+checksum = "843bc0191f75f3e22651ae5f1e72939ab2f72a4bc30fa80a066bd66edefc24d4"
 dependencies = [
  "aho-corasick",
  "memchr",
- "regex-automata 0.4.9",
+ "regex-automata 0.4.13",
  "regex-syntax 0.8.5",
 ]
 
@@ -3143,9 +3150,9 @@ dependencies = [
 
 [[package]]
 name = "regex-automata"
-version = "0.4.9"
+version = "0.4.13"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "809e8dc61f6de73b46c85f4c96486310fe304c434cfa43669d7b40f711150908"
+checksum = "5276caf25ac86c8d810222b3dbb938e512c55c6831a10f3e6ed1c93b84041f1c"
 dependencies = [
  "aho-corasick",
  "memchr",

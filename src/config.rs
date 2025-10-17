@@ -61,6 +61,9 @@ pub struct Config {
     pub base_url: Url,
 
     pub dry_run: bool,
+
+    #[serde(default)]
+    pub message_tearline: Option<String>,
 }
 
 pub static CONFIG: LazyLock<Config> = LazyLock::new(|| {

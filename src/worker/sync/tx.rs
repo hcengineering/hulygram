@@ -1,10 +1,13 @@
 use anyhow::{Ok, Result};
-use hulyrs::services::{
-    core::{PersonId, PersonUuid},
-    transactor::{
-        TransactorClient,
-        backend::http::HttpBackend,
-        document::{DocumentClient, FindOptionsBuilder},
+use hulyrs::{
+    lookup,
+    services::{
+        core::{PersonId, PersonUuid, SocialId, SocialIdId},
+        transactor::{
+            TransactorClient,
+            backend::http::HttpBackend,
+            document::{DocumentClient, FindOptionsBuilder},
+        },
     },
 };
 use serde_json::{Value, json};
@@ -23,6 +26,8 @@ pub(super) trait TransactorExt {
     async fn enumerate_channels(&self) -> Result<Vec<Channel>>;
 
     fn find_person(&self, person: PersonUuid) -> impl Future<Output = Result<Option<PersonId>>>;
+
+    async fn lookup_person_name(&self, sid: &SocialIdId) -> Result<Option<(String, String)>>;
 
     fn find_personal_space(
         &self,
@@ -69,6 +74,31 @@ impl TransactorExt for TransactorClient<HttpBackend> {
         trace!(?person_id);
 
         Ok(person_id)
+    }
+
+    async fn lookup_person_name(&self, sid: &SocialIdId) -> Result<Option<(String, String)>> {
+        let query = json!({
+            "_id": sid
+        });
+
+        let options = FindOptionsBuilder::default()
+            .lookup(lookup! {attachedTo: "contact:class:Person" })
+            .build();
+
+        let name = self
+            .find_one::<_, serde_json::Value>("contact:class:SocialIdentity", query, &options)
+            .await?
+            .map(|person| person["$lookup"]["attachedTo"]["name"].clone())
+            .map(|n| {
+                n.as_str().map(|n| {
+                    n.split_once(',')
+                        .map(|(last, first)| (last.to_owned(), first.to_owned()))
+                })
+            })
+            .flatten()
+            .flatten();
+
+        Ok(name)
     }
 
     #[instrument(level = "trace", skip(self))]
