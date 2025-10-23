@@ -12,6 +12,7 @@ use hulyrs::services::{
     core::SocialIdId,
     jwt::{Claims, actix::ServiceRequestExt},
 };
+use secrecy::SecretString;
 use serde::{Deserialize, Serialize};
 use tokio::task::JoinHandle;
 use tracing::*;
@@ -208,7 +209,7 @@ struct Integration {
 #[serde(tag = "command", rename_all = "lowercase")]
 enum Command {
     Start,
-    Next { input: String },
+    Next { input: SecretString },
     Disconnect,
 }
 

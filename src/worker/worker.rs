@@ -8,6 +8,7 @@ use grammers_client::{
     types::{LoginToken, PasswordToken, User},
 };
 use hulyrs::services::core::WorkspaceUuid;
+use secrecy::{ExposeSecret, SecretString};
 use serde::Serialize;
 use tokio::{
     select,
@@ -64,11 +65,11 @@ pub enum WorkerRequest {
     //RequestUser(Sender<User>),
     Reverse(SyncInfo, ReverseEvent),
     ProvideCode(
-        String,
+        SecretString,
         Sender<Result<WorkerStateResponse, WorkerRequestError>>,
     ),
     ProvidePassword(
-        String,
+        SecretString,
         Sender<Result<WorkerStateResponse, WorkerRequestError>>,
     ),
     Shutdown(bool),
@@ -99,8 +100,8 @@ pub type WorkerResponse<T> = Result<T, WorkerRequestError>;
 pub trait WorkerAccess {
     async fn request_state(&self) -> WorkerResponse<WorkerStateResponse>;
     async fn request_chats(&self, workspace: WorkspaceUuid) -> WorkerResponse<Vec<ChatEntry>>;
-    async fn provide_code(&self, code: String) -> WorkerResponse<WorkerStateResponse>;
-    async fn provide_password(&self, code: String) -> WorkerResponse<WorkerStateResponse>;
+    async fn provide_code(&self, code: SecretString) -> WorkerResponse<WorkerStateResponse>;
+    async fn provide_password(&self, code: SecretString) -> WorkerResponse<WorkerStateResponse>;
 }
 
 trait WorkerReceiver<T>: Future<Output = Result<WorkerResponse<T>, RecvError>> {
@@ -140,7 +141,10 @@ impl WorkerAccess for mpsc::Sender<WorkerRequest> {
         receiver.response("request_chats").await
     }
 
-    async fn provide_code(&self, code: String) -> Result<WorkerStateResponse, WorkerRequestError> {
+    async fn provide_code(
+        &self,
+        code: SecretString,
+    ) -> Result<WorkerStateResponse, WorkerRequestError> {
         let (sender, receiver) = channel();
         self.send(WorkerRequest::ProvideCode(code, sender)).await?;
 
@@ -149,7 +153,7 @@ impl WorkerAccess for mpsc::Sender<WorkerRequest> {
 
     async fn provide_password(
         &self,
-        password: String,
+        password: SecretString,
     ) -> Result<WorkerStateResponse, WorkerRequestError> {
         let (sender, receiver) = channel();
         self.send(WorkerRequest::ProvidePassword(password, sender))
@@ -450,14 +454,14 @@ impl Worker {
                             }
 
                             (WorkerState::WantCode(token), WorkerRequest::ProvideCode(code, response)) => {
-                                state = self.auth_code(&telegram, token, &code).await?;
+                                state = self.auth_code(&telegram, token, &code.expose_secret().to_string()).await?;
 
                                 #[allow(unused)]
                                 response.send(Ok(self.state_response(&state)));
                             }
 
                             (WorkerState::WantPassword(_, token), WorkerRequest::ProvidePassword(password, response)) => {
-                                state = self.auth_password(&telegram, token, &password).await?;
+                                state = self.auth_password(&telegram, token, &password.expose_secret().to_string()).await?;
 
                                 #[allow(unused)]
                                 response.send(Ok(self.state_response(&state)));

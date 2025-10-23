@@ -33,7 +33,7 @@ uuid = { version = "1.16.0", features = ["v4", "v7", "serde", "rng", "std"] }
 url = "2.5.4"
 ksuid = "0.2.0"
 chrono = { version = "0.4.40", features = ["serde"] }
-secrecy = "0.10.3"
+secrecy = { version = "0.10.3", features = ["serde"] }
 derive_builder = "0.20.2"
 derive_more = { version = "2.0.1", features = ["is_variant"] }
 multimap = "0.10.0"
