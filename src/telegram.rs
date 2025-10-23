@@ -46,6 +46,7 @@ pub enum ChatType {
 pub trait ChatExt {
     fn chat_type(&self) -> ChatType;
     fn is_deleted(&self) -> bool;
+    fn is_migrated(&self) -> bool;
     fn global_id(&self) -> String;
     fn channel_global_id(channel_id: i64) -> String;
 
@@ -71,6 +72,17 @@ impl ChatExt for Chat {
         } else {
             false
         }
+    }
+
+    fn is_migrated(&self) -> bool {
+        use grammers_client::types::Group;
+
+        matches!(
+            self,
+            Chat::Group(Group {
+                raw: tl::enums::Chat::Chat(c)
+            }) if c.migrated_to.is_some()
+        )
     }
 
     fn card_title(&self) -> String {

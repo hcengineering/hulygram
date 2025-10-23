@@ -444,7 +444,7 @@ impl Sync {
         let mut iter_dialogs = context.telegram.iter_dialogs();
 
         while let Some(dialog) = iter_dialogs.next().await? {
-            if !dialog.chat().is_deleted() {
+            if !dialog.chat().is_deleted() && !dialog.chat().is_migrated() {
                 self.all_chats.push(Arc::new(dialog.chat().to_owned()));
             }
         }
